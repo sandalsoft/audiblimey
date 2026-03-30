@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { ArrowLeft } from 'lucide-svelte';
-	import { getBookDetail } from '$lib/api/library.remote';
+	import { getBookDetail, getSimilarBooks } from '$lib/api/library.remote';
 
 	function formatRuntime(minutes: number | null): string {
 		if (minutes == null) return '';
@@ -200,6 +200,74 @@
 	{#snippet failed(error, reset)}
 		<div class="mt-6 rounded-xl border border-destructive/50 bg-destructive/10 p-6 text-center">
 			<p class="font-heading text-lg text-destructive">Failed to load book details</p>
+			<p class="mt-2 text-sm text-muted-foreground">
+				{error instanceof Error ? error.message : 'An unexpected error occurred'}
+			</p>
+			<button
+				onclick={reset}
+				class="mt-4 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+			>
+				Retry
+			</button>
+		</div>
+	{/snippet}
+</svelte:boundary>
+
+<!-- Similar Books — independent boundary per K006 -->
+<svelte:boundary>
+	{@const asin = page.params.asin ?? ''}
+	{@const similarResult = getSimilarBooks(asin)}
+	{@const similar = await similarResult}
+
+	{#if similar.items.length > 0}
+		<section class="mt-10">
+			<h2 class="font-heading text-xl font-bold text-foreground">Similar Books</h2>
+			<div class="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+				{#each similar.items as item}
+					<a
+						href="/books/{item.asin}"
+						class="group rounded-xl border border-border bg-card p-4 transition-colors hover:border-primary/30"
+					>
+						<p class="font-heading text-base font-semibold leading-snug text-card-foreground group-hover:text-primary">
+							{item.title}
+						</p>
+						{#if item.authors}
+							<p class="mt-1.5 text-sm text-muted-foreground">by {item.authors}</p>
+						{/if}
+						<div class="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+							{#if item.runtime_hours != null}
+								<span>{item.runtime_hours}h</span>
+							{/if}
+							{#if item.similarity_score != null}
+								<span class="rounded-md bg-primary/10 px-2 py-0.5 font-medium text-primary">
+									{Math.round(item.similarity_score * 100)}% match
+								</span>
+							{/if}
+						</div>
+					</a>
+				{/each}
+			</div>
+		</section>
+	{/if}
+
+	{#snippet pending()}
+		<section class="mt-10">
+			<div class="h-6 w-36 rounded bg-muted animate-pulse"></div>
+			<div class="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+				{#each { length: 3 } as _}
+					<div class="rounded-xl border border-border bg-card p-4 animate-pulse">
+						<div class="h-5 w-3/4 rounded bg-muted"></div>
+						<div class="mt-2 h-4 w-1/2 rounded bg-muted"></div>
+						<div class="mt-2 h-4 w-1/4 rounded bg-muted"></div>
+					</div>
+				{/each}
+			</div>
+		</section>
+	{/snippet}
+
+	{#snippet failed(error, reset)}
+		<div class="mt-10 rounded-xl border border-destructive/50 bg-destructive/10 p-6 text-center">
+			<p class="font-heading text-lg text-destructive">Failed to load similar books</p>
 			<p class="mt-2 text-sm text-muted-foreground">
 				{error instanceof Error ? error.message : 'An unexpected error occurred'}
 			</p>

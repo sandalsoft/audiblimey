@@ -163,6 +163,35 @@ export const getAuthorProfile = query('unchecked', async (id: number) => {
 	return v.parse(ProfileSchema, await response.json());
 });
 
+// --- GET /api/books/{asin}/similar ---
+
+const SimilarBookSchema = v.object({
+	asin: v.string(),
+	title: v.string(),
+	authors: v.string(),
+	runtime_hours: v.nullable(v.number()),
+	similarity_score: v.nullable(v.number())
+});
+
+const SimilarBooksResponseSchema = v.object({
+	items: v.array(SimilarBookSchema)
+});
+
+export type SimilarBook = v.InferOutput<typeof SimilarBookSchema>;
+export type SimilarBooksResponse = v.InferOutput<typeof SimilarBooksResponseSchema>;
+
+/**
+ * Fetch books similar to the given ASIN by embedding cosine similarity.
+ * Returns empty items array if the book has no embedding yet.
+ */
+export const getSimilarBooks = query('unchecked', async (asin: string) => {
+	const response = await fetch(`/api/books/${encodeURIComponent(asin)}/similar`);
+	if (!response.ok) {
+		throw new Error(`Failed to fetch similar books for ${asin}: ${response.status} ${response.statusText}`);
+	}
+	return v.parse(SimilarBooksResponseSchema, await response.json());
+});
+
 // --- GET /api/narrators/{id} ---
 
 /**
