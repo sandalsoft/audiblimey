@@ -6,6 +6,7 @@ from audiblimey.api.routes.embeddings import router as embeddings_router
 from audiblimey.api.routes.imports import router as imports_router
 from audiblimey.api.routes.library import router as library_router
 from audiblimey.api.routes.recommendations import router as recommendations_router
+from audiblimey.api.routes.search import router as search_router
 from audiblimey.api.routes.sync import router as sync_router
 from audiblimey.api.routes.taste import router as taste_router
 
@@ -21,6 +22,7 @@ app.include_router(embeddings_router, prefix="/api")
 app.include_router(imports_router, prefix="/api")
 app.include_router(library_router, prefix="/api")
 app.include_router(recommendations_router, prefix="/api")
+app.include_router(search_router, prefix="/api")
 app.include_router(sync_router, prefix="/api")
 app.include_router(taste_router, prefix="/api")
 
