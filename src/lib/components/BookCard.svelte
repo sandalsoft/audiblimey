@@ -1,7 +1,16 @@
 <script lang="ts">
-	import type { LibraryItem } from '$lib/api/library.remote';
+	type BookCardData = {
+		asin: string;
+		title: string;
+		runtime_minutes: number | null;
+		percent_complete: number;
+		is_finished: boolean;
+		user_rating: number | null;
+		authors?: string;
+		narrators?: string;
+	};
 
-	let { book }: { book: LibraryItem } = $props();
+	let { book }: { book: BookCardData } = $props();
 
 	function formatRuntime(minutes: number | null): string {
 		if (minutes == null) return '';
@@ -17,12 +26,16 @@
 		{book.title}
 	</a>
 
-	<p class="mt-2 text-sm text-muted-foreground">
-		by {book.authors}
-	</p>
-	<p class="text-sm text-muted-foreground">
-		Narrated by {book.narrators}
-	</p>
+	{#if book.authors}
+		<p class="mt-2 text-sm text-muted-foreground">
+			by {book.authors}
+		</p>
+	{/if}
+	{#if book.narrators}
+		<p class="text-sm text-muted-foreground">
+			Narrated by {book.narrators}
+		</p>
+	{/if}
 
 	<div class="mt-3 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
 		{#if book.runtime_minutes}
