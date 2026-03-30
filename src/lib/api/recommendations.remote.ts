@@ -55,7 +55,7 @@ export type RecommendationsResponse = v.InferOutput<typeof RecommendationsRespon
  * Fetch paginated scored recommendations from the backend.
  * Accepts limit (default 20) and offset (default 0) for pagination.
  */
-export const getRecommendations = query(async (params?: { limit?: number; offset?: number }) => {
+export const getRecommendations = query('unchecked', async (params: { limit?: number; offset?: number } | undefined) => {
 	const limit = params?.limit ?? 20;
 	const offset = params?.offset ?? 0;
 	const url = `/api/recommendations?limit=${limit}&offset=${offset}`;
