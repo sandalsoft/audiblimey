@@ -1,3 +1,4 @@
+// SvelteKit remote function — server-side query bridging to FastAPI /health
 import { query } from '$app/server';
 import * as v from 'valibot';
 
