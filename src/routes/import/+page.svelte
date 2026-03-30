@@ -9,9 +9,16 @@
 		type SyncStatusResponse,
 		type SyncJobStatus
 	} from '$lib/api/import.remote';
+	import {
+		getAudibleAuthStatus,
+		startAudibleAuth,
+		completeAudibleAuth
+	} from '$lib/api/auth.remote';
 
 	const stats = $derived(await getImportStats());
 	const historyData = $derived(await getImportHistory());
+	const authStatusQuery = getAudibleAuthStatus();
+	const authStatus = $derived(await authStatusQuery);
 
 	// --- Goodreads upload state ---
 	let selectedFile = $state<File | null>(null);
@@ -25,6 +32,49 @@
 	let syncError = $state<string | null>(null);
 	let syncStatus = $state<SyncStatusResponse | null>(null);
 	let isRefreshingStatus = $state(false);
+
+	// --- Audible auth state ---
+	let isStartingAuth = $state(false);
+	let oauthUrl = $state<string | null>(null);
+	let authSessionId = $state<string | null>(null);
+	let responseUrl = $state('');
+	let isCompletingAuth = $state(false);
+	let authError = $state<string | null>(null);
+
+	async function handleStartAuth() {
+		isStartingAuth = true;
+		authError = null;
+		oauthUrl = null;
+		try {
+			const result = await startAudibleAuth();
+			oauthUrl = result.oauth_url;
+			authSessionId = result.session_id;
+		} catch (err) {
+			authError = err instanceof Error ? err.message : 'Failed to start auth';
+		} finally {
+			isStartingAuth = false;
+		}
+	}
+
+	async function handleCompleteAuth() {
+		if (!authSessionId || !responseUrl.trim()) return;
+		isCompletingAuth = true;
+		authError = null;
+		try {
+			await completeAudibleAuth({
+				session_id: authSessionId,
+				response_url: responseUrl.trim(),
+			}).updates(authStatusQuery);
+			// Reset auth flow UI
+			oauthUrl = null;
+			authSessionId = null;
+			responseUrl = '';
+		} catch (err) {
+			authError = err instanceof Error ? err.message : 'Auth failed';
+		} finally {
+			isCompletingAuth = false;
+		}
+	}
 
 	function handleFileSelect(e: Event) {
 		const input = e.currentTarget as HTMLInputElement;
@@ -181,10 +231,87 @@
 	<div class="rounded-xl border border-border bg-card p-6">
 		<h2 class="font-heading text-lg font-semibold text-card-foreground">Audible Sync</h2>
 		<p class="mt-1 text-sm text-muted-foreground">
-			Sync your Audible library to keep your collection up to date.
+			Link your Audible account and sync your library.
 		</p>
 
 		<div class="mt-4 space-y-4">
+			<!-- Account Status -->
+			<svelte:boundary>
+				{#if authStatus.linked}
+					<div class="flex items-center gap-2 rounded-lg border border-border bg-accent/50 px-4 py-3">
+						<span class="inline-block h-2.5 w-2.5 rounded-full bg-green-500"></span>
+						<span class="text-sm font-medium text-card-foreground">Audible account linked</span>
+						<span class="text-xs text-muted-foreground">({authStatus.marketplace})</span>
+					</div>
+				{:else if oauthUrl}
+					<!-- Step 2: User needs to log in and paste URL -->
+					<div class="rounded-lg border border-primary/30 bg-primary/5 p-4 space-y-3">
+						<p class="text-sm font-medium text-card-foreground">Step 1: Log in to Amazon</p>
+						<p class="text-xs text-muted-foreground">
+							Open this link, sign in with your Amazon credentials, then copy the URL from the "page not found" page.
+						</p>
+						<a
+							href={oauthUrl}
+							target="_blank"
+							rel="noopener noreferrer"
+							class="inline-flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+						>
+							Open Amazon Login ↗
+						</a>
+
+						<div class="border-t border-border pt-3">
+							<p class="text-sm font-medium text-card-foreground">Step 2: Paste the redirect URL</p>
+							<p class="text-xs text-muted-foreground">
+								After logging in, your browser will show a "page not found" error. Copy the full URL from the address bar and paste it here.
+							</p>
+							<input
+								type="text"
+								placeholder="https://localhost/…"
+								bind:value={responseUrl}
+								class="mt-2 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+							/>
+							<button
+								onclick={handleCompleteAuth}
+								disabled={isCompletingAuth || !responseUrl.trim()}
+								class="mt-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40"
+							>
+								{isCompletingAuth ? 'Linking…' : 'Complete Linking'}
+							</button>
+						</div>
+					</div>
+				{:else}
+					<button
+						onclick={handleStartAuth}
+						disabled={isStartingAuth}
+						class="rounded-lg border border-border bg-card px-4 py-2 text-sm font-medium text-card-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
+					>
+						{isStartingAuth ? 'Generating link…' : 'Link Audible Account'}
+					</button>
+				{/if}
+
+				{#if authError}
+					<div class="rounded-lg border border-destructive/50 bg-destructive/10 p-3">
+						<p class="text-sm text-destructive">{authError}</p>
+					</div>
+				{/if}
+
+				{#snippet pending()}
+					<div class="flex items-center gap-2 animate-pulse">
+						<div class="h-2.5 w-2.5 rounded-full bg-muted"></div>
+						<div class="h-4 w-40 rounded bg-muted"></div>
+					</div>
+				{/snippet}
+				{#snippet failed(error, reset)}
+					<div class="text-sm text-muted-foreground">
+						Could not check account status.
+						<button onclick={reset} class="text-primary underline-offset-4 hover:underline">Retry</button>
+					</div>
+				{/snippet}
+			</svelte:boundary>
+
+			<!-- Sync Controls (only when linked) -->
+			{#if authStatus.linked}
+			<div class="border-t border-border pt-4">
 			<div class="flex items-center gap-3">
 				<button
 					onclick={handleSync}
@@ -255,7 +382,9 @@
 				{/if}
 			{/if}
 		</div>
+		{/if}
 	</div>
+</div>
 </div>
 
 <!-- Import Stats Dashboard -->
