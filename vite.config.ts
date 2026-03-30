@@ -16,7 +16,7 @@ export default defineConfig({
 			}
 		},
 		watch: {
-			ignored: ['**/.gsd/**', '**/.pi/**']
+			ignored: ['**/.gsd/**', '**/.pi/**', '**/.bg-shell/**']
 		}
 	}
 });
