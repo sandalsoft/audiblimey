@@ -1,6 +1,7 @@
 <script lang="ts">
 	import HealthCheck from '$lib/components/HealthCheck.svelte';
 	import RecommendationCard from '$lib/components/RecommendationCard.svelte';
+	import SeriesSection from '$lib/components/SeriesSection.svelte';
 	import { getRecommendations } from '$lib/api/recommendations.remote';
 
 	const PAGE_SIZE = 20;
@@ -92,3 +93,5 @@
 		{/snippet}
 	</svelte:boundary>
 </section>
+
+<SeriesSection />
