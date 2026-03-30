@@ -1,7 +1,15 @@
+<script lang="ts">
+	import HealthCheck from '$lib/components/HealthCheck.svelte';
+</script>
+
 <h1 class="font-heading text-3xl font-bold text-foreground">audiblimey</h1>
 <p class="mt-2 text-muted-foreground">
 	Your audiobook recommendation engine — powered by Audible + Goodreads taste fusion.
 </p>
+
+<div class="mt-6">
+	<HealthCheck />
+</div>
 
 <div class="mt-8 grid gap-4 md:grid-cols-2 lg:grid-cols-3">
 	<div class="rounded-xl border border-border bg-card p-6">
