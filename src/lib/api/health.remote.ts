@@ -1,5 +1,5 @@
 // SvelteKit remote function — server-side query bridging to FastAPI /health
-import { query } from '$app/server';
+import { query, getRequestEvent } from '$app/server';
 import * as v from 'valibot';
 
 const HealthSchema = v.object({
@@ -14,6 +14,7 @@ export type HealthResponse = v.InferOutput<typeof HealthSchema>;
  * Errors propagate to the nearest svelte:boundary.
  */
 export const getHealth = query(async () => {
+	const { fetch } = getRequestEvent();
 	const response = await fetch('/health');
 
 	if (!response.ok) {

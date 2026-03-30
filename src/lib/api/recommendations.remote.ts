@@ -1,5 +1,5 @@
 // SvelteKit remote function — server-side queries/commands bridging to FastAPI /api/recommendations
-import { query, command } from '$app/server';
+import { query, command, getRequestEvent } from '$app/server';
 import * as v from 'valibot';
 
 // --- Shared sub-schemas ---
@@ -19,10 +19,10 @@ const PricingSchema = v.nullable(
 );
 
 const ScoreComponentSchema = v.object({
-	name: v.string(),
-	value: v.number(),
+	source: v.string(),
+	raw_value: v.number(),
 	weight: v.number(),
-	contribution: v.number(),
+	weighted_value: v.number(),
 	detail: v.optional(v.string())
 });
 
@@ -56,6 +56,7 @@ export type RecommendationsResponse = v.InferOutput<typeof RecommendationsRespon
  * Accepts limit (default 20) and offset (default 0) for pagination.
  */
 export const getRecommendations = query('unchecked', async (params: { limit?: number; offset?: number } | undefined) => {
+	const { fetch } = getRequestEvent();
 	const limit = params?.limit ?? 20;
 	const offset = params?.offset ?? 0;
 	const url = `/api/recommendations?limit=${limit}&offset=${offset}`;
@@ -101,6 +102,7 @@ export type SeriesResponse = v.InferOutput<typeof SeriesResponseSchema>;
  * Fetch incomplete series with urgency ranking and next-book info.
  */
 export const getSeriesRecommendations = query(async () => {
+	const { fetch } = getRequestEvent();
 	const response = await fetch('/api/recommendations/series');
 
 	if (!response.ok) {
@@ -127,6 +129,7 @@ export type DismissResponse = v.InferOutput<typeof DismissResponseSchema>;
  * Uses "unchecked" input validation since the arg is a simple number.
  */
 export const dismissRecommendation = command('unchecked', async (recId: number) => {
+	const { fetch } = getRequestEvent();
 	const response = await fetch(`/api/recommendations/${recId}/dismiss`, {
 		method: 'POST'
 	});

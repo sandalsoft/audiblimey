@@ -1,5 +1,5 @@
 // SvelteKit remote function — server-side query bridging to FastAPI /api/search
-import { query } from '$app/server';
+import { query, getRequestEvent } from '$app/server';
 import * as v from 'valibot';
 
 /** A search result item from the API. */
@@ -38,6 +38,7 @@ export interface SearchParams {
 export const searchBooks = query(
 	'unchecked',
 	async (params: SearchParams) => {
+		const { fetch } = getRequestEvent();
 		const qs = new URLSearchParams({ q: params.q });
 		if (params.min_runtime != null) qs.set('min_runtime', String(params.min_runtime));
 		if (params.max_runtime != null) qs.set('max_runtime', String(params.max_runtime));

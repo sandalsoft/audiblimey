@@ -1,5 +1,5 @@
 // SvelteKit remote function — server-side queries/commands bridging to FastAPI /api/taste
-import { query, command } from '$app/server';
+import { query, command, getRequestEvent } from '$app/server';
 import * as v from 'valibot';
 
 // --- Schemas ---
@@ -33,6 +33,7 @@ export type UpdateResponse = v.InferOutput<typeof UpdateResponseSchema>;
  * Fetch the user's taste profile — text, edit, book count, generation date, and vector status.
  */
 export const getTasteProfile = query(async () => {
+	const { fetch } = getRequestEvent();
 	const response = await fetch('/api/taste/profile');
 	if (!response.ok) {
 		throw new Error(`Failed to fetch taste profile: ${response.status} ${response.statusText}`);
@@ -46,6 +47,7 @@ export const getTasteProfile = query(async () => {
  * Generate (or regenerate) the taste profile. Returns the new profile text.
  */
 export const generateTasteProfile = command(async () => {
+	const { fetch } = getRequestEvent();
 	const response = await fetch('/api/taste/generate', { method: 'POST' });
 	if (!response.ok) {
 		const body = await response.text();
@@ -60,6 +62,7 @@ export const generateTasteProfile = command(async () => {
  * Save user edits to their taste profile.
  */
 export const updateTasteProfile = command('unchecked', async (profileEdited: string) => {
+	const { fetch } = getRequestEvent();
 	const response = await fetch('/api/taste/profile', {
 		method: 'PUT',
 		headers: { 'Content-Type': 'application/json' },

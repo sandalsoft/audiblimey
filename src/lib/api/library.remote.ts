@@ -1,5 +1,5 @@
 // SvelteKit remote function — server-side queries bridging to FastAPI /api/library, /api/books, /api/authors, /api/narrators
-import { query } from '$app/server';
+import { query, getRequestEvent } from '$app/server';
 import * as v from 'valibot';
 
 // --- Shared sub-schemas ---
@@ -37,6 +37,7 @@ export type LibraryResponse = v.InferOutput<typeof LibraryResponseSchema>;
 export const getLibrary = query(
 	'unchecked',
 	async (params: { limit?: number; offset?: number; search?: string; status?: string } | undefined) => {
+		const { fetch } = getRequestEvent();
 		const limit = params?.limit ?? 20;
 		const offset = params?.offset ?? 0;
 		const qs = new URLSearchParams({ limit: String(limit), offset: String(offset) });
@@ -113,6 +114,7 @@ export type BookDetail = v.InferOutput<typeof BookDetailSchema>;
  * Fetch full book detail by ASIN including authors, narrators, series, pricing, and library status.
  */
 export const getBookDetail = query('unchecked', async (asin: string) => {
+	const { fetch } = getRequestEvent();
 	const response = await fetch(`/api/books/${encodeURIComponent(asin)}`);
 	if (!response.ok) {
 		throw new Error(`Failed to fetch book ${asin}: ${response.status} ${response.statusText}`);
@@ -156,6 +158,7 @@ export type Profile = v.InferOutput<typeof ProfileSchema>;
  * Fetch author profile with library stats and their books in the user's library.
  */
 export const getAuthorProfile = query('unchecked', async (id: number) => {
+	const { fetch } = getRequestEvent();
 	const response = await fetch(`/api/authors/${id}`);
 	if (!response.ok) {
 		throw new Error(`Failed to fetch author ${id}: ${response.status} ${response.statusText}`);
@@ -185,6 +188,7 @@ export type SimilarBooksResponse = v.InferOutput<typeof SimilarBooksResponseSche
  * Returns empty items array if the book has no embedding yet.
  */
 export const getSimilarBooks = query('unchecked', async (asin: string) => {
+	const { fetch } = getRequestEvent();
 	const response = await fetch(`/api/books/${encodeURIComponent(asin)}/similar`);
 	if (!response.ok) {
 		throw new Error(`Failed to fetch similar books for ${asin}: ${response.status} ${response.statusText}`);
@@ -198,6 +202,7 @@ export const getSimilarBooks = query('unchecked', async (asin: string) => {
  * Fetch narrator profile with library stats and their books in the user's library.
  */
 export const getNarratorProfile = query('unchecked', async (id: number) => {
+	const { fetch } = getRequestEvent();
 	const response = await fetch(`/api/narrators/${id}`);
 	if (!response.ok) {
 		throw new Error(`Failed to fetch narrator ${id}: ${response.status} ${response.statusText}`);

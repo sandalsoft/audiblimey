@@ -1,5 +1,5 @@
 // SvelteKit remote function — server-side queries/commands bridging to FastAPI /api/import, /api/sync
-import { query, command } from '$app/server';
+import { query, command, getRequestEvent } from '$app/server';
 import * as v from 'valibot';
 
 // --- Import response schemas ---
@@ -108,6 +108,7 @@ export type SyncStatusResponse = v.InferOutput<typeof SyncStatusResponseSchema>;
  * so the browser auto-sets the multipart boundary correctly.
  */
 export const uploadGoodreads = command('unchecked', async (file: File) => {
+	const { fetch } = getRequestEvent();
 	const formData = new FormData();
 	formData.append('file', file);
 
@@ -129,6 +130,7 @@ export const uploadGoodreads = command('unchecked', async (file: File) => {
  * Fetch current import statistics — totals, match rate, rating distribution, shelves.
  */
 export const getImportStats = query(async () => {
+	const { fetch } = getRequestEvent();
 	const response = await fetch('/api/import/stats');
 
 	if (!response.ok) {
@@ -143,6 +145,7 @@ export const getImportStats = query(async () => {
  * Fetch import job history (most recent 20).
  */
 export const getImportHistory = query(async () => {
+	const { fetch } = getRequestEvent();
 	const response = await fetch('/api/import/history');
 
 	if (!response.ok) {
@@ -158,6 +161,7 @@ export const getImportHistory = query(async () => {
  * Returns 400 if no account configured, 409 if sync already running.
  */
 export const startAudibleSync = command(async () => {
+	const { fetch } = getRequestEvent();
 	const response = await fetch('/api/sync/audible', {
 		method: 'POST'
 	});
@@ -175,6 +179,7 @@ export const startAudibleSync = command(async () => {
  * Get the latest sync job status, or { status: 'no_syncs' } when no jobs exist.
  */
 export const getSyncStatus = query(async () => {
+	const { fetch } = getRequestEvent();
 	const response = await fetch('/api/sync/status');
 
 	if (!response.ok) {
