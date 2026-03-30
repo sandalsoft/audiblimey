@@ -10,6 +10,7 @@
 	let saveError = $state<string | null>(null);
 
 	const profileQuery = getTasteProfile();
+	const profile = $derived(await profileQuery);
 
 	function activeText(profile: { profile_text: string | null; profile_edited: string | null }): string | null {
 		return profile.profile_edited ?? profile.profile_text;
@@ -66,9 +67,6 @@
 	</div>
 
 	<svelte:boundary>
-		{@const result = profileQuery}
-		{@const profile = await result}
-
 		{@const text = activeText(profile)}
 		{@const isEdited = profile.profile_edited != null}
 

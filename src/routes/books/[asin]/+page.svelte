@@ -3,6 +3,10 @@
 	import { ArrowLeft } from 'lucide-svelte';
 	import { getBookDetail, getSimilarBooks } from '$lib/api/library.remote';
 
+	const asin = $derived(page.params.asin ?? '');
+	const book = $derived(await getBookDetail(asin));
+	const similar = $derived(await getSimilarBooks(asin));
+
 	function formatRuntime(minutes: number | null): string {
 		if (minutes == null) return '';
 		const h = Math.floor(minutes / 60);
@@ -24,10 +28,6 @@
 </a>
 
 <svelte:boundary>
-	{@const asin = page.params.asin ?? ''}
-	{@const detail = getBookDetail(asin)}
-	{@const book = await detail}
-
 	<article class="mt-6 space-y-6">
 		<!-- Header -->
 		<header>
@@ -215,10 +215,6 @@
 
 <!-- Similar Books — independent boundary per K006 -->
 <svelte:boundary>
-	{@const asin = page.params.asin ?? ''}
-	{@const similarResult = getSimilarBooks(asin)}
-	{@const similar = await similarResult}
-
 	{#if similar.items.length > 0}
 		<section class="mt-10">
 			<h2 class="font-heading text-xl font-bold text-foreground">Similar Books</h2>

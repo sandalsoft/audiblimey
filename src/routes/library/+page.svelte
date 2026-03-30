@@ -14,6 +14,14 @@
 		{ value: 'in-progress' as const, label: 'In Progress' },
 		{ value: 'not-started' as const, label: 'Not Started' }
 	];
+
+	const libraryQuery = $derived(getLibrary({
+		limit: PAGE_SIZE,
+		offset,
+		search: search || undefined,
+		status: status !== 'all' ? status : undefined
+	}));
+	const data = $derived(await libraryQuery);
 </script>
 
 <h1 class="font-heading text-3xl font-bold text-foreground">Your Library</h1>
@@ -47,14 +55,6 @@
 <!-- Library Grid -->
 <section class="mt-8">
 	<svelte:boundary>
-		{@const libraryQuery = getLibrary({
-			limit: PAGE_SIZE,
-			offset,
-			search: search || undefined,
-			status: status !== 'all' ? status : undefined
-		})}
-		{@const data = await libraryQuery}
-
 		{#if data.items.length === 0}
 			<div class="rounded-xl border border-border bg-card p-10 text-center">
 				<p class="font-heading text-lg text-card-foreground">No books found</p>

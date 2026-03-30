@@ -44,6 +44,18 @@
 	const hasActiveFilters = $derived(
 		minRuntime != null || maxRuntime != null || minRating != null
 	);
+
+	const searchData = $derived(
+		submittedQuery
+			? await searchBooks({
+					q: submittedQuery,
+					min_runtime: minRuntime,
+					max_runtime: maxRuntime,
+					min_rating: minRating,
+					limit: 20
+				})
+			: null
+	);
 </script>
 
 <h1 class="font-heading text-3xl font-bold text-foreground">Search</h1>
@@ -148,22 +160,13 @@
 				Try something like "cozy mystery with humor" or "epic sci-fi space opera with great world building"
 			</p>
 		</div>
-	{:else}
+	{:else if searchData}
 		<svelte:boundary>
-			{@const results = searchBooks({
-				q: submittedQuery,
-				min_runtime: minRuntime,
-				max_runtime: maxRuntime,
-				min_rating: minRating,
-				limit: 20
-			})}
-			{@const data = await results}
-
 			<p class="mb-4 text-sm text-muted-foreground">
-				{data.items.length} result{data.items.length !== 1 ? 's' : ''} for "<span class="text-foreground">{data.query}</span>"
+				{searchData.items.length} result{searchData.items.length !== 1 ? 's' : ''} for "<span class="text-foreground">{searchData.query}</span>"
 			</p>
 
-			{#if data.items.length === 0}
+			{#if searchData.items.length === 0}
 				<div class="rounded-xl border border-border bg-card p-10 text-center">
 					<p class="font-heading text-lg text-card-foreground">No results found</p>
 					<p class="mt-2 text-sm text-muted-foreground">
@@ -172,7 +175,7 @@
 				</div>
 			{:else}
 				<div class="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-					{#each data.items as result (result.asin)}
+					{#each searchData.items as result (result.asin)}
 						<a
 							href="/books/{result.asin}"
 							class="group rounded-xl border border-border bg-card p-5 transition-colors hover:border-primary/30"

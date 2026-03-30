@@ -1,9 +1,10 @@
 <script lang="ts">
 	import { getHealth } from '$lib/api/health.remote';
+
+	const health = $derived(await getHealth());
 </script>
 
 <svelte:boundary>
-	{@const health = await getHealth()}
 	<div class="rounded-xl border border-border bg-card p-4">
 		<div class="flex items-center gap-2">
 			<span class="inline-block h-2.5 w-2.5 rounded-full bg-green-500"></span>

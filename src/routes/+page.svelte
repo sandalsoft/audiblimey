@@ -6,6 +6,9 @@
 
 	const PAGE_SIZE = 20;
 	let offset = $state(0);
+
+	const recsQuery = $derived(getRecommendations({ limit: PAGE_SIZE, offset }));
+	const recs = $derived(await recsQuery);
 </script>
 
 <h1 class="font-heading text-3xl font-bold text-foreground">Your Next Listen</h1>
@@ -19,9 +22,6 @@
 
 <section class="mt-8">
 	<svelte:boundary>
-		{@const recsQuery = getRecommendations({ limit: PAGE_SIZE, offset })}
-		{@const recs = await recsQuery}
-
 		{#if recs.items.length === 0}
 			<div class="rounded-xl border border-border bg-card p-10 text-center">
 				<p class="font-heading text-lg text-card-foreground">No recommendations yet</p>

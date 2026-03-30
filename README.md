@@ -40,11 +40,16 @@ docker compose up -d
 
 This starts PostgreSQL 16 with pgvector on port 5432. The schema auto-migrates from `db/migrations/` on first run.
 
-### 2. Install Python dependencies
+### 2. Set up Python virtual environment
 
 ```bash
-pip install fastapi uvicorn psycopg2-binary audible httpx pydantic pytest
+python3 -m venv .venv
+source .venv/bin/activate   # macOS/Linux
+# .venv\Scripts\activate    # Windows
+pip install -r requirements.txt
 ```
+
+> **Note:** Activate the venv in every new terminal session before running the backend or tests.
 
 ### 3. Start the FastAPI backend
 

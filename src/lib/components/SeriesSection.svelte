@@ -1,6 +1,8 @@
 <script lang="ts">
 	import SeriesCard from '$lib/components/SeriesCard.svelte';
 	import { getSeriesRecommendations } from '$lib/api/recommendations.remote';
+
+	const seriesData = $derived(await getSeriesRecommendations());
 </script>
 
 <section class="mt-10">
@@ -11,8 +13,6 @@
 
 	<div class="mt-5">
 		<svelte:boundary>
-			{@const seriesData = await getSeriesRecommendations()}
-
 			{#if seriesData.series.length === 0}
 				<div class="rounded-xl border border-border bg-card p-10 text-center">
 					<p class="font-heading text-lg text-card-foreground">No incomplete series</p>

@@ -10,6 +10,9 @@
 		type SyncJobStatus
 	} from '$lib/api/import.remote';
 
+	const stats = $derived(await getImportStats());
+	const historyData = $derived(await getImportHistory());
+
 	// --- Goodreads upload state ---
 	let selectedFile = $state<File | null>(null);
 	let isUploading = $state(false);
@@ -260,9 +263,6 @@
 	<h2 class="font-heading text-xl font-semibold text-foreground">Import Statistics</h2>
 
 	<svelte:boundary>
-		{@const statsQuery = getImportStats()}
-		{@const stats = await statsQuery}
-
 		<div class="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
 			<div class="rounded-xl border border-border bg-card p-5">
 				<p class="text-sm text-muted-foreground">Goodreads Books</p>
@@ -374,10 +374,7 @@
 	<h2 class="font-heading text-xl font-semibold text-foreground">Import History</h2>
 
 	<svelte:boundary>
-		{@const historyQuery = getImportHistory()}
-		{@const history = await historyQuery}
-
-		{#if history.imports.length === 0}
+		{#if historyData.imports.length === 0}
 			<div class="mt-4 rounded-xl border border-border bg-card p-10 text-center">
 				<p class="font-heading text-lg text-card-foreground">No imports yet</p>
 				<p class="mt-2 text-sm text-muted-foreground">
@@ -398,7 +395,7 @@
 						</tr>
 					</thead>
 					<tbody>
-						{#each history.imports as job (job.id)}
+						{#each historyData.imports as job (job.id)}
 							{@const badge = formatStatusBadge(job.status)}
 							<tr class="border-b border-border last:border-0">
 								<td class="px-4 py-3 font-medium text-card-foreground capitalize">{job.type}</td>

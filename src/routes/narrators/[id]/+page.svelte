@@ -3,6 +3,8 @@
 	import { ArrowLeft } from 'lucide-svelte';
 	import { getNarratorProfile } from '$lib/api/library.remote';
 	import PersonProfile from '$lib/components/PersonProfile.svelte';
+
+	const narrator = $derived(await getNarratorProfile(Number(page.params.id)));
 </script>
 
 <a href="/library" class="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground">
@@ -11,9 +13,6 @@
 </a>
 
 <svelte:boundary>
-	{@const profileQuery = getNarratorProfile(Number(page.params.id))}
-	{@const narrator = await profileQuery}
-
 	<div class="mt-6 space-y-6">
 		<h1 class="font-heading text-3xl font-bold text-foreground">{narrator.name}</h1>
 		<PersonProfile personType="Narrator" name={narrator.name} stats={narrator.stats} books={narrator.books} />
