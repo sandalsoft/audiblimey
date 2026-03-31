@@ -29,8 +29,22 @@ async def get_library(
     params: list = [user_id]
 
     if search:
-        base_where += " AND b.title ILIKE %s"
-        params.append(f"%{search}%")
+        base_where += """
+            AND (
+                b.title ILIKE %s
+                OR EXISTS (
+                    SELECT 1 FROM book_authors ba
+                    JOIN authors a ON ba.author_id = a.id
+                    WHERE ba.book_id = b.id AND a.name ILIKE %s
+                )
+                OR EXISTS (
+                    SELECT 1 FROM book_narrators bn
+                    JOIN narrators n ON bn.narrator_id = n.id
+                    WHERE bn.book_id = b.id AND n.name ILIKE %s
+                )
+            )"""
+        like_param = f"%{search}%"
+        params.extend([like_param, like_param, like_param])
 
     if status and status != "all":
         if status == "finished":
