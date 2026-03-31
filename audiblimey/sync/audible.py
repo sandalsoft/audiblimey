@@ -5,6 +5,7 @@ Ported from AudiPy's phase3_fetch_library.py (MySQL → PostgreSQL).
 
 import json
 import logging
+import re
 from datetime import datetime, timezone
 
 from audiblimey.db import get_cursor
@@ -204,29 +205,50 @@ def store_book(cur, user_id: int, book_data: dict) -> int | None:
         series_row = cur.fetchone()
         series_id = series_row[0]
 
-        sequence = series.get("sequence")
+        raw_sequence = series.get("sequence")
+        sequence_display = str(raw_sequence) if raw_sequence else None
+
+        # sequence column is DECIMAL — parse to a number.
+        # Audible sends compound values like "1-6" for omnibus editions;
+        # use the first number for sorting, keep the raw string in display.
+        sequence_numeric = None
+        if raw_sequence is not None:
+            raw_str = str(raw_sequence).strip()
+            try:
+                sequence_numeric = float(raw_str)
+            except ValueError:
+                # Try extracting the leading number from e.g. "1-6", "3.5-4"
+                match = re.match(r"^([0-9]+(?:\.[0-9]+)?)", raw_str)
+                if match:
+                    sequence_numeric = float(match.group(1))
+
         cur.execute(
             """
             INSERT INTO book_series (book_id, series_id, sequence, sequence_display)
             VALUES (%s, %s, %s, %s)
             ON CONFLICT (book_id, series_id) DO NOTHING
             """,
-            (book_id, series_id, sequence, str(sequence) if sequence else None),
+            (book_id, series_id, sequence_numeric, sequence_display),
         )
 
     # -- User library entry --------------------------------------------------
     purchase_date = _parse_datetime(book_data.get("purchase_date"))
 
+    # Audible's rating response_group nests under "rating"
+    rating_obj = book_data.get("rating") or {}
+    user_rating = rating_obj.get("overall_distribution", {}).get("display_average_rating") if isinstance(rating_obj, dict) else None
+
     cur.execute(
         """
         INSERT INTO user_libraries (
             user_id, book_id, purchase_date,
-            percent_complete, is_finished
-        ) VALUES (%s, %s, %s, %s, %s)
+            percent_complete, is_finished, user_rating
+        ) VALUES (%s, %s, %s, %s, %s, %s)
         ON CONFLICT (user_id, book_id) DO UPDATE SET
             purchase_date = EXCLUDED.purchase_date,
             percent_complete = EXCLUDED.percent_complete,
-            is_finished = EXCLUDED.is_finished
+            is_finished = EXCLUDED.is_finished,
+            user_rating = COALESCE(EXCLUDED.user_rating, user_libraries.user_rating)
         """,
         (
             user_id,
@@ -234,6 +256,7 @@ def store_book(cur, user_id: int, book_data: dict) -> int | None:
             purchase_date,
             book_data.get("percent_complete", 0),
             book_data.get("is_finished", False),
+            user_rating,
         ),
     )
 
@@ -263,7 +286,7 @@ def fetch_audible_library(auth_data: dict, marketplace: str = "us") -> list[dict
             "1.0/library",
             num_results=page_size,
             page=page,
-            response_groups="series,contributors,product_desc,media,price",
+            response_groups="series,contributors,product_desc,media,price,is_finished,percent_complete,listening_status,rating",
         )
         items = response.get("items", [])
         all_items.extend(items)
@@ -348,13 +371,18 @@ def run_sync(user_id: int, job_id: int):
         with get_cursor() as cur:
             for book_data in library_items:
                 try:
+                    # Savepoint per book so one failure doesn't poison
+                    # the whole transaction.
+                    cur.execute("SAVEPOINT book_save")
                     book_id = store_book(cur, user_id, book_data)
+                    cur.execute("RELEASE SAVEPOINT book_save")
                     if book_id is not None:
                         books_processed += 1
                         # We can't easily distinguish add vs update from
                         # ON CONFLICT, so count all as processed.
                         books_added += 1
                 except Exception as exc:
+                    cur.execute("ROLLBACK TO SAVEPOINT book_save")
                     logger.warning(
                         "sync.run_sync: failed to store book %s: %s",
                         book_data.get("asin", "?"),
