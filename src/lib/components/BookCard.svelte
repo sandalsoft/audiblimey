@@ -1,4 +1,6 @@
 <script lang="ts">
+	import Highlight from '$lib/components/Highlight.svelte';
+
 	type BookCardData = {
 		asin: string;
 		title: string;
@@ -10,7 +12,7 @@
 		narrators?: string;
 	};
 
-	let { book }: { book: BookCardData } = $props();
+	let { book, query = '' }: { book: BookCardData; query?: string } = $props();
 
 	function formatRuntime(minutes: number | null): string {
 		if (minutes == null) return '';
@@ -23,17 +25,17 @@
 
 <div class="group rounded-xl border border-border bg-card p-5 transition-colors hover:border-primary/30">
 	<a href="/books/{book.asin}" class="font-heading text-base font-semibold leading-snug text-card-foreground hover:text-primary">
-		{book.title}
+		<Highlight text={book.title} {query} />
 	</a>
 
 	{#if book.authors}
 		<p class="mt-2 text-sm text-muted-foreground">
-			by {book.authors}
+			by <Highlight text={book.authors} {query} />
 		</p>
 	{/if}
 	{#if book.narrators}
 		<p class="text-sm text-muted-foreground">
-			Narrated by {book.narrators}
+			Narrated by <Highlight text={book.narrators} {query} />
 		</p>
 	{/if}
 

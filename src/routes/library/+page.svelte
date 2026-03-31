@@ -65,7 +65,7 @@
 		{:else}
 			<div class="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
 				{#each data.items as book (book.asin)}
-					<BookCard {book} />
+					<BookCard {book} query={search} />
 				{/each}
 			</div>
 
