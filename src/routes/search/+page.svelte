@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { Search as SearchIcon, SlidersHorizontal, X } from 'lucide-svelte';
 	import { searchBooks, type SearchResult } from '$lib/api/search.remote';
+	import Highlight from '$lib/components/Highlight.svelte';
 
 	let queryText = $state('');
 	let submittedQuery = $state('');
@@ -182,7 +183,7 @@
 						>
 							<div class="flex items-start justify-between gap-2">
 								<h3 class="font-heading text-base font-semibold leading-snug text-card-foreground group-hover:text-primary">
-									{result.title}
+									<Highlight text={result.title} query={submittedQuery} />
 								</h3>
 								{#if result.similarity_score != null}
 									<span class="shrink-0 rounded-md bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
@@ -193,13 +194,13 @@
 
 							{#if result.authors}
 								<p class="mt-2 text-sm text-muted-foreground">
-									by {result.authors}
+									by <Highlight text={result.authors} query={submittedQuery} />
 								</p>
 							{/if}
 
 							{#if result.categories}
 								<p class="mt-1 text-xs text-muted-foreground/80 line-clamp-1">
-									{result.categories}
+									<Highlight text={result.categories} query={submittedQuery} />
 								</p>
 							{/if}
 
