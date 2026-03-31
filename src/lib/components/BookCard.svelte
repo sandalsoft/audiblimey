@@ -4,7 +4,7 @@
 		title: string;
 		runtime_minutes: number | null;
 		percent_complete: number;
-		is_finished: boolean;
+		is_finished: boolean | null;
 		user_rating: number | null;
 		authors?: string;
 		narrators?: string;

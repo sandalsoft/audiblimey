@@ -11,7 +11,7 @@ const LibraryItemSchema = v.object({
 	runtime_minutes: v.nullable(v.number()),
 	runtime_hours: v.nullable(v.number()),
 	percent_complete: v.number(),
-	is_finished: v.boolean(),
+	is_finished: v.nullable(v.boolean()),
 	purchase_date: v.nullable(v.string()),
 	user_rating: v.nullable(v.number()),
 	authors: v.string(),
@@ -80,7 +80,7 @@ const BookPricingSchema = v.nullable(
 const UserLibraryEntrySchema = v.nullable(
 	v.object({
 		percent_complete: v.number(),
-		is_finished: v.boolean(),
+		is_finished: v.nullable(v.boolean()),
 		purchase_date: v.nullable(v.string()),
 		user_rating: v.nullable(v.number())
 	})
@@ -129,7 +129,7 @@ const ProfileBookSchema = v.object({
 	title: v.string(),
 	runtime_minutes: v.nullable(v.number()),
 	percent_complete: v.number(),
-	is_finished: v.boolean(),
+	is_finished: v.nullable(v.boolean()),
 	user_rating: v.nullable(v.number())
 });
 
