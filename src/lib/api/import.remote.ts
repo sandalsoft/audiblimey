@@ -177,8 +177,12 @@ export const startAudibleSync = command(async () => {
 
 /**
  * Get the latest sync job status, or { status: 'no_syncs' } when no jobs exist.
+ *
+ * Implemented as a command (not a query) so each call hits the server fresh
+ * — required for polling while a sync runs. `query()` caches by key and the
+ * client-side Query thenable interacts badly with manual `.refresh()` loops.
  */
-export const getSyncStatus = query(async () => {
+export const getSyncStatus = command(async () => {
 	const { fetch } = getRequestEvent();
 	const response = await fetch('/api/sync/status');
 

@@ -47,4 +47,4 @@
 </script>
 
 {#each segments as segment}{#if segment.highlight}<mark
-			class="rounded-sm bg-[#000] px-0.5 text-[#B0F85E]">{segment.text}</mark>{:else}{segment.text}{/if}{/each}
+			class="rounded-sm bg-[#000000] px-0.5 text-[#b9f07b] border">{segment.text}</mark>{:else}{segment.text}{/if}{/each}

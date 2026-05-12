@@ -2,7 +2,6 @@
 	import {
 		uploadGoodreads,
 		startAudibleSync,
-		getSyncStatus,
 		getImportStats,
 		getImportHistory,
 		type UploadGoodreadsResponse,
@@ -98,6 +97,42 @@
 		}
 	}
 
+	const SYNC_POLL_MS = 2000;
+	let pollTimer: ReturnType<typeof setTimeout> | null = null;
+
+	function stopPolling() {
+		if (pollTimer !== null) {
+			clearTimeout(pollTimer);
+			pollTimer = null;
+		}
+	}
+
+	// Direct browser fetch — bypasses SvelteKit remote-function caching
+	// and any experimental-async reactivity interactions that were causing
+	// awaits to hang. The /api proxy is wired in vite.config.ts.
+	async function fetchSyncStatusDirect(): Promise<SyncStatusResponse | null> {
+		try {
+			const res = await fetch('/api/sync/status', { cache: 'no-store' });
+			if (!res.ok) return null;
+			const data = await res.json();
+			return data as SyncStatusResponse;
+		} catch {
+			return null;
+		}
+	}
+
+	function schedulePoll() {
+		stopPolling();
+		pollTimer = setTimeout(async () => {
+			pollTimer = null;
+			const next = await fetchSyncStatusDirect();
+			if (next) syncStatus = next;
+			if (next && isSyncJob(next) && (next.status === 'pending' || next.status === 'running')) {
+				schedulePoll();
+			}
+		}, SYNC_POLL_MS);
+	}
+
 	async function handleSync() {
 		isSyncing = true;
 		syncError = null;
@@ -105,7 +140,11 @@
 		try {
 			await startAudibleSync();
 			syncStarted = true;
-			await refreshSyncStatus();
+			const initial = await fetchSyncStatusDirect();
+			if (initial) syncStatus = initial;
+			if (initial && isSyncJob(initial) && (initial.status === 'pending' || initial.status === 'running')) {
+				schedulePoll();
+			}
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : 'Sync failed';
 			if (msg.includes('400')) {
@@ -123,9 +162,11 @@
 	async function refreshSyncStatus() {
 		isRefreshingStatus = true;
 		try {
-			syncStatus = await getSyncStatus();
-		} catch {
-			// silently fail — status panel just stays stale
+			const next = await fetchSyncStatusDirect();
+			if (next) syncStatus = next;
+			if (next && isSyncJob(next) && (next.status === 'pending' || next.status === 'running')) {
+				schedulePoll();
+			}
 		} finally {
 			isRefreshingStatus = false;
 		}
@@ -134,6 +175,10 @@
 	function isSyncJob(s: SyncStatusResponse): s is SyncJobStatus {
 		return s.status !== 'no_syncs';
 	}
+
+	$effect(() => {
+		return () => stopPolling();
+	});
 
 	function formatStatusBadge(status: string): { label: string; classes: string } {
 		switch (status) {
