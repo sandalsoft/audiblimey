@@ -8,6 +8,8 @@ import logging
 import re
 from datetime import datetime, timezone
 
+from psycopg2.extras import Json
+
 from audiblimey.db import get_cursor
 
 logger = logging.getLogger(__name__)
@@ -32,11 +34,127 @@ def _parse_datetime(datetime_str):
         return None
 
 
-def store_book(cur, user_id: int, book_data: dict) -> int | None:
+def _collect_image_urls(value) -> list[str]:
+    """Collect plausible image URLs from Audible's loosely documented media payload."""
+    urls: list[str] = []
+
+    if isinstance(value, str):
+        if value.startswith(("http://", "https://")):
+            urls.append(value)
+        return urls
+
+    if isinstance(value, list):
+        for item in value:
+            urls.extend(_collect_image_urls(item))
+        return urls
+
+    if isinstance(value, dict):
+        for item in value.values():
+            urls.extend(_collect_image_urls(item))
+
+    return urls
+
+
+def _best_product_image_url(product_images) -> str | None:
+    if not isinstance(product_images, dict):
+        return None
+
+    candidates: list[tuple[int, str]] = []
+    for key, value in product_images.items():
+        urls = _collect_image_urls(value)
+        if not urls:
+            continue
+        try:
+            size = int(key)
+        except (TypeError, ValueError):
+            size = 0
+        candidates.extend((size, url) for url in urls)
+
+    if not candidates:
+        return None
+
+    return max(candidates, key=lambda item: (item[0], len(item[1])))[1]
+
+
+def _best_image_url(book_data: dict) -> str | None:
+    """Pick the largest-looking image URL from known Audible image fields."""
+    product_image_url = _best_product_image_url(book_data.get("product_images"))
+    if product_image_url:
+        return product_image_url
+
+    image_url = book_data.get("image_url")
+    if isinstance(image_url, str) and image_url.startswith(("http://", "https://")):
+        return image_url
+
+    candidates: list[str] = []
+    for key in ("rich_images", "social_media_images"):
+        candidates.extend(_collect_image_urls(book_data.get(key)))
+
+    if not candidates:
+        return None
+
+    def score(url: str) -> tuple[int, int]:
+        dimensions = [int(n) for n in re.findall(r"(?<!\d)(\d{2,4})(?!\d)", url)]
+        return (max(dimensions) if dimensions else 0, len(url))
+
+    return max(dict.fromkeys(candidates), key=score)
+
+
+def _cache_image_metadata(cur, book_id: int, book_data: dict) -> None:
+    product_images = book_data.get("product_images")
+    social_media_images = book_data.get("social_media_images")
+    rich_images = book_data.get("rich_images")
+    image_url = _best_image_url(book_data)
+
+    if not any(value is not None for value in (product_images, social_media_images, rich_images, image_url)):
+        return
+
+    cur.execute(
+        """
+        INSERT INTO book_extended_data (
+            book_id, product_images, social_media_images, rich_images, image_url
+        ) VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT (book_id) DO UPDATE SET
+            product_images = COALESCE(EXCLUDED.product_images, book_extended_data.product_images),
+            social_media_images = COALESCE(EXCLUDED.social_media_images, book_extended_data.social_media_images),
+            rich_images = COALESCE(EXCLUDED.rich_images, book_extended_data.rich_images),
+            image_url = COALESCE(EXCLUDED.image_url, book_extended_data.image_url)
+        """,
+        (
+            book_id,
+            Json(product_images) if product_images is not None else None,
+            Json(social_media_images) if social_media_images is not None else None,
+            Json(rich_images) if rich_images is not None else None,
+            image_url,
+        ),
+    )
+
+
+def _fetch_catalog_media(client, asin: str) -> dict | None:
+    try:
+        response = client.get(
+            f"1.0/catalog/products/{asin}",
+            response_groups="media",
+            image_sizes="1215,500",
+        )
+    except Exception as exc:
+        logger.warning("Failed to fetch catalog media for %s: %s", asin, exc)
+        return None
+
+    product = response.get("product") if isinstance(response, dict) else None
+    if isinstance(product, dict):
+        return product
+    return response if isinstance(response, dict) else None
+
+
+def store_book(cur, user_id: int, book_data: dict, in_library: bool = True) -> int | None:
     """Store a single book and its relationships in PostgreSQL.
 
-    Upserts the book, deduplicates authors/narrators/series by name,
-    links them via junction tables, and upserts the user_library entry.
+    Upserts the book, deduplicates authors/narrators/series by name, and links
+    them via junction tables. When ``in_library`` is True (library sync), also
+    upserts the user_library entry. Catalog-discovered books the user does not
+    own are stored with ``in_library=False`` and get no user_library row — that
+    absence is how the rest of the app represents "unowned".
 
     Returns the book ID on success, None if the book is skipped
     (missing ASIN or missing title).
@@ -52,20 +170,22 @@ def store_book(cur, user_id: int, book_data: dict) -> int | None:
         return None
 
     publication_datetime = _parse_datetime(book_data.get("publication_datetime"))
+    release_date = _parse_datetime(book_data.get("release_date"))
 
     # -- Upsert book --------------------------------------------------------
     cur.execute(
         """
         INSERT INTO books (
             asin, title, subtitle, publisher_name, publication_datetime,
-            language, content_type, runtime_length_min,
+            release_date, language, content_type, runtime_length_min,
             merchandising_summary, extended_product_description
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (asin) DO UPDATE SET
             title = EXCLUDED.title,
             subtitle = EXCLUDED.subtitle,
             publisher_name = EXCLUDED.publisher_name,
             publication_datetime = EXCLUDED.publication_datetime,
+            release_date = COALESCE(EXCLUDED.release_date, books.release_date),
             language = EXCLUDED.language,
             content_type = EXCLUDED.content_type,
             runtime_length_min = EXCLUDED.runtime_length_min,
@@ -79,6 +199,7 @@ def store_book(cur, user_id: int, book_data: dict) -> int | None:
             book_data.get("subtitle"),
             book_data.get("publisher_name"),
             publication_datetime,
+            release_date,
             book_data.get("language", ""),
             book_data.get("content_type"),
             book_data.get("runtime_length_min"),
@@ -88,6 +209,9 @@ def store_book(cur, user_id: int, book_data: dict) -> int | None:
     )
     row = cur.fetchone()
     book_id = row[0]
+
+    # -- Extended image metadata --------------------------------------------
+    _cache_image_metadata(cur, book_id, book_data)
 
     # -- Authors -------------------------------------------------------------
     authors = book_data.get("authors") or []
@@ -232,6 +356,10 @@ def store_book(cur, user_id: int, book_data: dict) -> int | None:
         )
 
     # -- User library entry --------------------------------------------------
+    # Catalog-discovered (unowned) books get no user_library row.
+    if not in_library:
+        return book_id
+
     purchase_date = _parse_datetime(book_data.get("purchase_date"))
 
     # Audible's rating response_group nests under "rating"
@@ -263,6 +391,51 @@ def store_book(cur, user_id: int, book_data: dict) -> int | None:
     return book_id
 
 
+def create_audible_client(auth_data: dict, timeout: int = 10):
+    """Create an authenticated Audible API client from a stored auth dict.
+
+    Shared by library sync and catalog discovery so both use identical auth.
+    ``timeout`` is the per-request HTTP timeout (seconds) applied to every call.
+    """
+    from audible import Authenticator, Client
+
+    auth = Authenticator.from_dict(auth_data)
+    return Client(auth=auth, timeout=timeout)
+
+
+def audible_auth_from_db(user_id: int) -> tuple[dict, str]:
+    """Load the latest stored Audible auth payload for a user."""
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            SELECT encrypted_auth_data, marketplace
+            FROM user_audible_accounts
+            WHERE user_id = %s
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (user_id,),
+        )
+        row = cur.fetchone()
+
+    if not row:
+        raise RuntimeError("No Audible account configured for user")
+
+    encrypted_auth_data, marketplace = row
+    try:
+        auth_data = json.loads(encrypted_auth_data)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise RuntimeError(f"Invalid Audible auth data: {exc}") from exc
+
+    return auth_data, marketplace or "us"
+
+
+def client_from_db(user_id: int, timeout: int = 10):
+    """Build an authenticated Audible API client from the user's stored auth."""
+    auth_data, _marketplace = audible_auth_from_db(user_id)
+    return create_audible_client(auth_data, timeout=timeout)
+
+
 def fetch_audible_library(auth_data: dict, marketplace: str = "us") -> list[dict]:
     """Fetch user's library from Audible API.
 
@@ -272,10 +445,7 @@ def fetch_audible_library(auth_data: dict, marketplace: str = "us") -> list[dict
     Returns list of book dicts from the Audible API.
     Raises on auth or network errors — callers should handle.
     """
-    from audible import Authenticator, Client
-
-    auth = Authenticator.from_dict(auth_data)
-    client = Client(auth=auth)
+    client = create_audible_client(auth_data)
 
     all_items = []
     page_size = 1000
@@ -287,8 +457,16 @@ def fetch_audible_library(auth_data: dict, marketplace: str = "us") -> list[dict
             num_results=page_size,
             page=page,
             response_groups="series,contributors,product_desc,media,price,is_finished,percent_complete,listening_status,rating",
+            image_sizes="1215,500",
         )
         items = response.get("items", [])
+        for item in items:
+            if not _best_image_url(item) and item.get("asin"):
+                catalog_media = _fetch_catalog_media(client, item["asin"])
+                if catalog_media:
+                    for key in ("product_images", "social_media_images", "rich_images", "image_url"):
+                        if key in catalog_media and key not in item:
+                            item[key] = catalog_media[key]
         all_items.extend(items)
 
         total = response.get("total_results", len(items))
@@ -328,32 +506,10 @@ def run_sync(user_id: int, job_id: int):
 
     try:
         # -- Load auth data --------------------------------------------------
-        with get_cursor() as cur:
-            cur.execute(
-                """
-                SELECT encrypted_auth_data, marketplace
-                FROM user_audible_accounts
-                WHERE user_id = %s
-                ORDER BY created_at DESC
-                LIMIT 1
-                """,
-                (user_id,),
-            )
-            account_row = cur.fetchone()
-
-        if not account_row:
-            _fail_job(job_id, "No Audible account configured for user")
-            return
-
-        encrypted_auth_data, marketplace = account_row
-
-        # For now, auth_data is stored as JSON text (encryption handled at
-        # a higher layer — the column is encrypted_auth_data but this module
-        # receives the data as-is from the DB).
         try:
-            auth_data = json.loads(encrypted_auth_data)
-        except (json.JSONDecodeError, TypeError) as exc:
-            _fail_job(job_id, f"Invalid auth data: {exc}")
+            auth_data, marketplace = audible_auth_from_db(user_id)
+        except RuntimeError as exc:
+            _fail_job(job_id, str(exc))
             return
 
         # -- Fetch library ---------------------------------------------------
@@ -389,6 +545,19 @@ def run_sync(user_id: int, job_id: int):
                         exc,
                     )
                     continue
+
+        # -- Discover unowned candidates + regenerate recommendations --------
+        # Best-effort: the library sync already succeeded, so a catalog/OpenAI
+        # failure here must not fail the job. Imported lazily to avoid a
+        # circular import (engine.recommend imports from this module).
+        try:
+            from audiblimey.engine.recommend import generate_recommendations
+
+            client = create_audible_client(auth_data)
+            rec_summary = generate_recommendations(user_id, client=client)
+            logger.info("sync.run_sync: recommendations %s", rec_summary)
+        except Exception as exc:
+            logger.warning("sync.run_sync: recommendation generation failed: %s", exc)
 
         # -- Mark job complete -----------------------------------------------
         with get_cursor() as cur:

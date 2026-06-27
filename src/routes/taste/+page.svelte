@@ -1,6 +1,102 @@
 <script lang="ts">
-	import { Sparkles, Pencil, X, RefreshCw, Loader2, BookOpen } from 'lucide-svelte';
-	import { getTasteProfile, generateTasteProfile, updateTasteProfile } from '$lib/api/taste.remote';
+	import { Sparkles, Pencil, X, RefreshCw, Loader2, BookOpen, Search, Ban } from 'lucide-svelte';
+	import {
+		getTasteProfile,
+		generateTasteProfile,
+		updateTasteProfile,
+		getTasteRules,
+		deleteTasteRule,
+		putTasteRule,
+		searchTasteEntities,
+		type TasteRules
+	} from '$lib/api/taste.remote';
+
+	const SCOPE_LABEL: Record<string, string> = {
+		title: 'Title',
+		author: 'Author',
+		narrator: 'Narrator',
+		category: 'Genre',
+		series: 'Series'
+	};
+
+	// Scopes the user can exclude by search (backend "category" = genre).
+	type AddScope = 'author' | 'category' | 'title' | 'series';
+	const SCOPE_OPTIONS: { value: AddScope; label: string }[] = [
+		{ value: 'author', label: 'Author' },
+		{ value: 'category', label: 'Genre' },
+		{ value: 'title', label: 'Title' },
+		{ value: 'series', label: 'Series' }
+	];
+
+	const rulesQuery = getTasteRules();
+	const rules = $derived(await rulesQuery);
+
+	function flatRules(r: TasteRules) {
+		const scopes = ['title', 'author', 'narrator', 'category', 'series'] as const;
+		return scopes.flatMap((scope) => r[scope].map((rule) => ({ scope, ...rule })));
+	}
+
+	async function removeRule(id: number) {
+		await deleteTasteRule(id).updates(rulesQuery);
+	}
+
+	// --- Add an exclusion by searching for an entity ---
+	let addScope = $state<AddScope>('author');
+	let searchText = $state('');
+	let searchResults = $state<{ id: number; label: string }[]>([]);
+	let searching = $state(false);
+	let addError = $state<string | null>(null);
+	let debounceTimer: ReturnType<typeof setTimeout> | undefined;
+
+	function scopeLabel(scope: AddScope): string {
+		return SCOPE_OPTIONS.find((o) => o.value === scope)?.label ?? scope;
+	}
+
+	async function runSearch() {
+		const term = searchText.trim();
+		if (term.length < 2) {
+			searchResults = [];
+			searching = false;
+			return;
+		}
+		try {
+			const res = await searchTasteEntities({ scope: addScope, q: term });
+			searchResults = res.results;
+		} catch (err) {
+			addError = err instanceof Error ? err.message : 'Search failed';
+			searchResults = [];
+		} finally {
+			searching = false;
+		}
+	}
+
+	function scheduleSearch() {
+		clearTimeout(debounceTimer);
+		addError = null;
+		if (searchText.trim().length < 2) {
+			searchResults = [];
+			searching = false;
+			return;
+		}
+		searching = true;
+		debounceTimer = setTimeout(runSearch, 250);
+	}
+
+	function selectScope(scope: AddScope) {
+		addScope = scope;
+		scheduleSearch();
+	}
+
+	async function addExclusion(entityId: number) {
+		addError = null;
+		try {
+			await putTasteRule({ scope: addScope, entity_id: entityId, mode: 'exclude' }).updates(rulesQuery);
+			searchText = '';
+			searchResults = [];
+		} catch (err) {
+			addError = err instanceof Error ? err.message : 'Failed to add exclusion';
+		}
+	}
 
 	let editing = $state(false);
 	let editText = $state('');
@@ -226,4 +322,106 @@
 			</div>
 		{/snippet}
 	</svelte:boundary>
+
+	<!-- Taste rules -->
+	<div class="space-y-3">
+		<div>
+			<h2 class="font-heading text-xl font-semibold text-foreground">Taste rules</h2>
+			<p class="mt-1 text-sm text-muted-foreground">
+				Exclusions and includes apply to recommendations immediately. The profile text above
+				updates the next time you Regenerate.
+			</p>
+		</div>
+
+		<!-- Add an exclusion by search -->
+		<div class="space-y-3 rounded-lg border border-border bg-card p-4">
+			<div class="flex flex-wrap items-center gap-2">
+				<span class="text-sm font-medium text-foreground">Exclude a</span>
+				{#each SCOPE_OPTIONS as opt (opt.value)}
+					<button
+						type="button"
+						onclick={() => selectScope(opt.value)}
+						class="rounded-md border px-2.5 py-1 text-xs font-medium transition-colors {addScope === opt.value
+							? 'border-primary bg-primary/10 text-primary'
+							: 'border-border text-muted-foreground hover:text-foreground'}"
+					>
+						{opt.label}
+					</button>
+				{/each}
+			</div>
+
+			<div class="relative">
+				<Search class="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+				<input
+					type="text"
+					bind:value={searchText}
+					oninput={scheduleSearch}
+					placeholder={`Search ${scopeLabel(addScope).toLowerCase()}s by name…`}
+					class="w-full rounded-lg border border-border bg-background py-2 pl-9 pr-3 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+				/>
+			</div>
+
+			{#if addError}
+				<p class="text-sm text-destructive">{addError}</p>
+			{/if}
+
+			{#if searching}
+				<p class="text-xs text-muted-foreground">Searching…</p>
+			{:else if searchText.trim().length >= 2 && searchResults.length === 0}
+				<p class="text-xs text-muted-foreground">No matches.</p>
+			{:else if searchResults.length > 0}
+				<ul class="divide-y divide-border rounded-md border border-border">
+					{#each searchResults as result (result.id)}
+						<li class="flex items-center justify-between gap-3 px-3 py-2 text-sm">
+							<span class="min-w-0 truncate text-card-foreground">{result.label}</span>
+							<button
+								type="button"
+								onclick={() => addExclusion(result.id)}
+								class="inline-flex shrink-0 items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-destructive"
+							>
+								<Ban class="h-3 w-3" />
+								Exclude
+							</button>
+						</li>
+					{/each}
+				</ul>
+			{/if}
+		</div>
+
+		<svelte:boundary>
+			{@const list = flatRules(rules)}
+			{#if list.length === 0}
+				<p class="rounded-lg border border-dashed border-border bg-card p-4 text-sm text-muted-foreground">
+					No taste rules yet. Use the search above to exclude an author, genre, title, or series —
+					or add rules from the Library, book, and series pages.
+				</p>
+			{:else}
+				<ul class="divide-y divide-border rounded-lg border border-border bg-card">
+					{#each list as rule (rule.id)}
+						<li class="flex items-center justify-between gap-3 px-4 py-2.5 text-sm">
+							<span class="min-w-0 truncate">
+								<span class="text-muted-foreground">{SCOPE_LABEL[rule.scope]}:</span>
+								{rule.label ?? `#${rule.entity_id}`}
+								<span class="ml-1 rounded px-1.5 py-0.5 text-xs font-medium {rule.mode === 'include' ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'}">
+									{rule.mode}
+								</span>
+							</span>
+							<button
+								type="button"
+								onclick={() => removeRule(rule.id)}
+								aria-label="Remove rule"
+								class="shrink-0 rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+							>
+								<X class="h-4 w-4" />
+							</button>
+						</li>
+					{/each}
+				</ul>
+			{/if}
+
+			{#snippet pending()}
+				<div class="h-16 animate-pulse rounded-lg border border-border bg-card"></div>
+			{/snippet}
+		</svelte:boundary>
+	</div>
 </div>

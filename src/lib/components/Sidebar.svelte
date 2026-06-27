@@ -1,12 +1,13 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { cn } from '$lib/utils';
-	import { Home, BookOpen, Library, Upload, Sparkles, Search } from 'lucide-svelte';
+	import { Home, BookOpen, Library, Upload, Sparkles, Search, Wand2 } from 'lucide-svelte';
 
 	const navItems = [
 		{ href: '/', label: 'Dashboard', icon: Home },
 		{ href: '/library', label: 'Library', icon: BookOpen },
 		{ href: '/search', label: 'Search', icon: Search },
+		{ href: '/recommendations', label: 'Recommendations', icon: Wand2 },
 		{ href: '/taste', label: 'Taste', icon: Sparkles },
 		{ href: '/import', label: 'Import', icon: Upload }
 	] as const;

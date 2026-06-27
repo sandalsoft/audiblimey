@@ -4,6 +4,7 @@ import logging
 from fastapi import FastAPI
 from audiblimey.api.routes.auth import router as auth_router
 from audiblimey.api.routes.embeddings import router as embeddings_router
+from audiblimey.api.routes.enrichment import router as enrichment_router
 from audiblimey.api.routes.imports import router as imports_router
 from audiblimey.api.routes.library import router as library_router
 from audiblimey.api.routes.recommendations import router as recommendations_router
@@ -21,6 +22,7 @@ app = FastAPI(
 
 app.include_router(auth_router, prefix="/api")
 app.include_router(embeddings_router, prefix="/api")
+app.include_router(enrichment_router, prefix="/api")
 app.include_router(imports_router, prefix="/api")
 app.include_router(library_router, prefix="/api")
 app.include_router(recommendations_router, prefix="/api")

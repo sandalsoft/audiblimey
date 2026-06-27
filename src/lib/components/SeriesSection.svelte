@@ -2,7 +2,15 @@
 	import SeriesCard from '$lib/components/SeriesCard.svelte';
 	import { getSeriesRecommendations } from '$lib/api/recommendations.remote';
 
-	const seriesData = $derived(await getSeriesRecommendations());
+	let {
+		query,
+		onExclude
+	}: {
+		query: ReturnType<typeof getSeriesRecommendations>;
+		onExclude: (scope: string, entityId: number) => void;
+	} = $props();
+
+	const seriesData = $derived(await query);
 </script>
 
 <section class="mt-10">
@@ -22,8 +30,8 @@
 				</div>
 			{:else}
 				<div class="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-					{#each seriesData.series as series (series.series_title)}
-						<SeriesCard {series} />
+					{#each seriesData.series as series (series.series_id)}
+						<SeriesCard {series} {onExclude} />
 					{/each}
 				</div>
 			{/if}

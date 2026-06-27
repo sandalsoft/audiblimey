@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from audiblimey.api.main import app
-from audiblimey.sync.audible import store_book, _parse_datetime
+from audiblimey.sync.audible import store_book, _parse_datetime, _best_image_url
 
 client = TestClient(app)
 
@@ -148,6 +148,54 @@ class TestStoreBook:
         # Verify user_libraries upsert
         ul_queries = [q for q, _ in cur.executed_queries if "INTO user_libraries" in q]
         assert len(ul_queries) == 1
+
+    def test_sync_does_not_touch_manual_rating(self):
+        """Sync writes the Audible average to user_rating and must never
+        write user_manual_rating, or it would clobber the user's one-click rating."""
+        cur = self._make_cursor(book_id=7)
+        book_data = {
+            "asin": "B00TEST123",
+            "title": "Test Audiobook",
+            "rating": {"overall_distribution": {"display_average_rating": 4.7}},
+        }
+        store_book(cur, user_id=1, book_data=book_data)
+
+        ul_queries = [q for q, _ in cur.executed_queries if "INTO user_libraries" in q]
+        assert len(ul_queries) == 1
+        assert "user_rating" in ul_queries[0]
+        assert "user_manual_rating" not in ul_queries[0]
+
+    def test_store_book_caches_image_metadata(self):
+        """Audible media payloads should be cached for card/detail images."""
+        cur = self._make_cursor(book_id=7)
+        book_data = {
+            "asin": "B00IMG123",
+            "title": "Book With Image",
+            "product_images": {
+                "500": "https://cdn.example.com/cover-500.jpg",
+                "1215": "https://cdn.example.com/cover-1215.jpg",
+            },
+        }
+
+        store_book(cur, user_id=1, book_data=book_data)
+
+        image_queries = [q for q, _ in cur.executed_queries if "INTO book_extended_data" in q]
+        assert len(image_queries) == 1
+        assert "image_url" in image_queries[0]
+        assert cur.executed_queries[1][1][-1] == "https://cdn.example.com/cover-1215.jpg"
+
+    def test_best_image_url_prefers_plain_product_cover(self):
+        book_data = {
+            "product_images": {
+                "500": "https://cdn.example.com/plain-500.jpg",
+                "1215": "https://cdn.example.com/plain-1215.jpg",
+            },
+            "social_media_images": {
+                "ig_static_with_bg": "https://cdn.example.com/social-2160-title-overlay.jpg",
+            },
+        }
+
+        assert _best_image_url(book_data) == "https://cdn.example.com/plain-1215.jpg"
 
     def test_store_book_skips_missing_asin(self):
         """Book with no ASIN should be skipped — return None."""

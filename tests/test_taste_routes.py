@@ -215,3 +215,131 @@ class TestUpdateTasteProfile:
         )
         assert resp.status_code == 404
         assert "generate one first" in resp.json()["detail"].lower()
+
+
+# ---------------------------------------------------------------------------
+# Taste rules: GET / PUT / DELETE /api/taste/rules
+# ---------------------------------------------------------------------------
+
+
+class TestTasteRules:
+    @patch("audiblimey.api.routes.taste.get_cursor")
+    def test_get_rules_grouped_by_scope(self, mock_gc):
+        cur = FakeCursor({
+            "FROM taste_rules tr": [
+                (1, "title", 42, "exclude", "Dune"),
+                (2, "author", 7, "include", "Some Author"),
+            ]
+        })
+        mock_gc.side_effect = lambda: fake_get_cursor(cur)
+
+        resp = client.get("/api/taste/rules")
+        assert resp.status_code == 200
+        data = resp.json()
+        # all five scope keys present
+        assert set(data.keys()) == {"title", "author", "narrator", "category", "series"}
+        assert data["title"][0] == {"id": 1, "entity_id": 42, "mode": "exclude", "label": "Dune"}
+        assert data["author"][0]["mode"] == "include"
+        assert data["narrator"] == []
+
+    @patch("audiblimey.api.routes.taste.get_cursor")
+    def test_put_rule_returns_id_and_mode(self, mock_gc):
+        cur = FakeCursor({"INSERT INTO taste_rules": [(10, "exclude")]})
+        mock_gc.side_effect = lambda: fake_get_cursor(cur)
+
+        resp = client.put("/api/taste/rules", json={"scope": "author", "entity_id": 7})
+        assert resp.status_code == 200
+        assert resp.json() == {"id": 10, "scope": "author", "entity_id": 7, "mode": "exclude"}
+
+    @patch("audiblimey.api.routes.taste.get_cursor")
+    def test_put_existing_rule_flips_mode(self, mock_gc):
+        """Idempotent upsert: re-PUT returns the row even on conflict (DO UPDATE)."""
+        cur = FakeCursor({"INSERT INTO taste_rules": [(10, "include")]})
+        mock_gc.side_effect = lambda: fake_get_cursor(cur)
+
+        resp = client.put(
+            "/api/taste/rules", json={"scope": "author", "entity_id": 7, "mode": "include"}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["mode"] == "include"
+
+    def test_put_invalid_scope_rejected(self):
+        resp = client.put("/api/taste/rules", json={"scope": "publisher", "entity_id": 1})
+        assert resp.status_code == 422
+
+    def test_put_invalid_mode_rejected(self):
+        resp = client.put(
+            "/api/taste/rules", json={"scope": "title", "entity_id": 1, "mode": "maybe"}
+        )
+        assert resp.status_code == 422
+
+    @patch("audiblimey.api.routes.taste.get_cursor")
+    def test_delete_rule_succeeds(self, mock_gc):
+        cur = FakeCursor({"DELETE FROM taste_rules": [(5,)]})
+        mock_gc.side_effect = lambda: fake_get_cursor(cur)
+
+        resp = client.delete("/api/taste/rules/5")
+        assert resp.status_code == 200
+        assert resp.json() == {"deleted": 5}
+
+    @patch("audiblimey.api.routes.taste.get_cursor")
+    def test_delete_missing_rule_404(self, mock_gc):
+        cur = FakeCursor({})  # DELETE RETURNING returns nothing
+        mock_gc.side_effect = lambda: fake_get_cursor(cur)
+
+        resp = client.delete("/api/taste/rules/999")
+        assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# GET /api/taste/entities (search entities to build exclusion rules)
+# ---------------------------------------------------------------------------
+
+
+class _ParamCursor:
+    """Records the params of the last execute() so we can assert limit capping."""
+
+    def __init__(self):
+        self.last_params = None
+
+    def execute(self, query, params=None):
+        self.last_params = params
+
+    def fetchall(self):
+        return []
+
+    def close(self):
+        pass
+
+
+class TestSearchEntities:
+    @patch("audiblimey.api.routes.taste.get_cursor")
+    def test_returns_results_for_scope(self, mock_gc):
+        cur = FakeCursor({"FROM authors": [(1, "Brandon Sanderson"), (2, "Brent Weeks")]})
+        mock_gc.side_effect = lambda: fake_get_cursor(cur)
+
+        resp = client.get("/api/taste/entities?scope=author&q=br")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["results"][0] == {"id": 1, "label": "Brandon Sanderson"}
+        assert len(data["results"]) == 2
+
+    def test_short_query_returns_empty(self):
+        # Queries shorter than 2 chars short-circuit without touching the DB.
+        resp = client.get("/api/taste/entities?scope=author&q=a")
+        assert resp.status_code == 200
+        assert resp.json() == {"results": []}
+
+    def test_invalid_scope_rejected(self):
+        # 'narrator' is not an addable scope here → FastAPI validation 422.
+        resp = client.get("/api/taste/entities?scope=narrator&q=foo")
+        assert resp.status_code == 422
+
+    @patch("audiblimey.api.routes.taste.get_cursor")
+    def test_limit_capped_at_20(self, mock_gc):
+        cur = _ParamCursor()
+        mock_gc.side_effect = lambda: fake_get_cursor(cur)
+
+        resp = client.get("/api/taste/entities?scope=series&q=ring&limit=99")
+        assert resp.status_code == 200
+        assert cur.last_params == ("%ring%", 20)

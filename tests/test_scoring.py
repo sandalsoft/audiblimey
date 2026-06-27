@@ -1,7 +1,9 @@
 """Tests for rating-weighted scoring engine."""
 
 import math
+from contextlib import contextmanager
 from datetime import date, timedelta
+from unittest.mock import patch
 
 import pytest
 
@@ -134,6 +136,7 @@ class TestIntegration:
         progress = get_series_progress()
         assert isinstance(progress, list)
         for sp in progress:
+            assert "series_id" in sp
             assert "series_title" in sp
             assert "urgency_score" in sp
 
@@ -167,3 +170,57 @@ class TestIntegration:
             assert score.final_score > 0
             assert len(score.components) >= 1
             assert any(c.source == "author_rating" for c in score.components)
+
+
+class _RecCursor:
+    """Records executed SQL so we can assert the exclusion clause is applied."""
+
+    def __init__(self):
+        self.queries = []
+
+    def execute(self, q, p=None):
+        self.queries.append((q, p))
+
+    def fetchall(self):
+        return []
+
+    def fetchone(self):
+        return None
+
+    def close(self):
+        pass
+
+
+@contextmanager
+def _fake_cursor(cur):
+    yield cur
+
+
+class TestExclusionFiltering:
+    """Each source-signal query must drop excluded books via <> ALL(...)."""
+
+    def _queries_for(self, fn):
+        cur = _RecCursor()
+        with patch("audiblimey.engine.scoring.get_cursor", lambda *a, **k: _fake_cursor(cur)):
+            fn(excluded_ids={5})
+        return cur.queries
+
+    def test_author_scores_filtered(self):
+        q, p = self._queries_for(get_author_scores)[0]
+        assert "<> ALL(%s::bigint[])" in q
+        assert 5 in p[-1]
+
+    def test_narrator_scores_filtered(self):
+        q, p = self._queries_for(get_narrator_scores)[0]
+        assert "<> ALL(%s::bigint[])" in q
+        assert 5 in p[-1]
+
+    def test_series_progress_filtered(self):
+        q, p = self._queries_for(get_series_progress)[0]
+        assert "<> ALL(%s::bigint[])" in q
+        assert 5 in p[-1]
+
+    def test_negative_signals_filtered(self):
+        q, p = self._queries_for(get_negative_signals)[0]
+        assert "<> ALL(%s::bigint[])" in q
+        assert 5 in p[-1]

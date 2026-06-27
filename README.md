@@ -30,7 +30,7 @@ Built for one person's 696+ book Audible library. Single-user, local-first.
 
 - [Docker](https://docs.docker.com/get-docker/) (for PostgreSQL + pgvector)
 - [Node.js](https://nodejs.org/) 20+ and [pnpm](https://pnpm.io/)
-- Python 3.11+
+- Python 3.11 or 3.12. Python 3.13+ is not currently supported because the `audible` dependency requires Python `<3.13`.
 
 ### 1. Start the database
 
@@ -43,18 +43,18 @@ This starts PostgreSQL 16 with pgvector on port 5432. The schema auto-migrates f
 ### 2. Set up Python virtual environment
 
 ```bash
-python3 -m venv .venv
+python3.11 -m venv .venv
 source .venv/bin/activate   # macOS/Linux
 # .venv\Scripts\activate    # Windows
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
-> **Note:** Activate the venv in every new terminal session before running the backend or tests.
+> **Note:** Activate the venv in every new terminal session before running the backend or tests. If you already created `.venv` with Python 3.13 or newer, rebuild it with `python3.11 -m venv --clear .venv`, then run `python -m pip install -r requirements.txt` again.
 
 ### 3. Start the FastAPI backend
 
 ```bash
-uvicorn audiblimey.api.main:app --reload --port 8000
+python -m uvicorn audiblimey.api.main:app --reload --port 8000
 ```
 
 The API runs at [http://localhost:8000](http://localhost:8000). Health check: `GET /health`.
@@ -136,7 +136,8 @@ Three sections:
 
 ```bash
 # Python backend tests (88 tests)
-python3 -m pytest tests/ -v
+source .venv/bin/activate
+python -m pytest tests/ -v
 
 # SvelteKit type checking
 pnpm check

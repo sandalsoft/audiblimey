@@ -7,11 +7,56 @@ import pytest
 
 from audiblimey.engine.taste import (
     EMBEDDING_DIMS,
+    _is_excluded,
     _parse_pgvector,
     compute_taste_vector,
     build_profile_context,
+    excluded_book_ids,
     generate_taste_profile,
 )
+
+
+# ---------------------------------------------------------------------------
+# _is_excluded precedence + excluded_book_ids resolution
+# ---------------------------------------------------------------------------
+
+
+class TestExclusionPrecedence:
+    def test_title_exclude_wins(self):
+        assert _is_excluded(True, False, False, False) is True
+
+    def test_title_include_overrides_entity_exclude(self):
+        assert _is_excluded(False, True, True, False) is False
+
+    def test_entity_exclude_without_include(self):
+        assert _is_excluded(False, False, True, False) is True
+
+    def test_entity_include_overrides_entity_exclude(self):
+        assert _is_excluded(False, False, True, True) is False
+
+    def test_no_rules_not_excluded(self):
+        assert _is_excluded(False, False, False, False) is False
+
+
+class TestExcludedBookIds:
+    def test_applies_precedence_over_flag_rows(self):
+        # (book_id, te, ti, ee, ei)
+        rows = [
+            (1, True, False, False, False),   # title exclude        -> excluded
+            (2, False, True, True, False),    # title include wins   -> kept
+            (3, False, False, True, False),   # entity exclude only  -> excluded
+            (4, False, False, True, True),    # entity include wins  -> kept
+        ]
+
+        class _Rec:
+            def __init__(self, rows):
+                self.rows = rows
+            def execute(self, q, p=None):
+                self.last = q
+            def fetchall(self):
+                return self.rows
+
+        assert excluded_book_ids(_Rec(rows), 1) == {1, 3}
 
 
 # ---------------------------------------------------------------------------
@@ -92,10 +137,10 @@ class TestComputeTasteVector:
         emb_a = _make_full_embedding(1.0)  # all 1.0
         emb_b = _make_full_embedding(3.0)  # all 3.0
 
-        # book_id, embedding, gr_rating, user_rating, is_finished, pct_complete
+        # book_id, embedding, gr_rating, user_rating, is_finished, pct_complete, manual_rating
         rows = [
-            (1, emb_a, 5, None, True, 100),   # goodreads rating 5
-            (2, emb_b, 3, None, True, 100),    # goodreads rating 3
+            (1, emb_a, 5, None, True, 100, None),   # goodreads rating 5
+            (2, emb_b, 3, None, True, 100, None),    # goodreads rating 3
         ]
         cursor = FakeCursor({"embedding IS NOT NULL": rows})
 
@@ -107,17 +152,48 @@ class TestComputeTasteVector:
         assert len(vector) == EMBEDDING_DIMS
         assert abs(vector[0] - 1.75) < 1e-9
 
+    def test_excluded_ids_filter_in_query(self):
+        """Passing excluded_ids adds the <> ALL filter and the excluded list as a param."""
+        emb = _make_full_embedding(1.0)
+        cursor = FakeCursor({"embedding IS NOT NULL": [(1, emb, 5, None, True, 100, None)]})
+
+        compute_taste_vector(cursor, user_id=1, excluded_ids={42, 7})
+
+        vq, params = next(
+            (q, p) for q, p in cursor.executed_queries if "embedding IS NOT NULL" in q
+        )
+        assert "<> ALL(%s::bigint[])" in vq
+        assert set(params[-1]) == {42, 7}
+
+    def test_manual_rating_takes_priority(self):
+        """user_manual_rating outranks goodreads, audible, and is_finished."""
+        emb_a = _make_full_embedding(1.0)
+        emb_b = _make_full_embedding(3.0)
+        # Book 1: manual=1 should win over goodreads=5/audible=5.
+        # Book 2: manual=5 should win over goodreads=1.
+        rows = [
+            (1, emb_a, 5, 5, True, 100, 1),
+            (2, emb_b, 1, 1, True, 100, 5),
+        ]
+        cursor = FakeCursor({"embedding IS NOT NULL": rows})
+
+        vector, count = compute_taste_vector(cursor, user_id=1)
+
+        assert count == 2
+        # Weights are the manual ratings: (1*1.0 + 5*3.0) / (1+5) = 16/6 ≈ 2.6667
+        assert abs(vector[0] - (16.0 / 6.0)) < 1e-9
+
     def test_mixed_rating_sources(self):
         """Goodreads > audible user_rating > is_finished fallback."""
         emb = _make_full_embedding(1.0)
 
         rows = [
             # book with goodreads rating 5 (top priority)
-            (1, emb, 5, 4, True, 100),
+            (1, emb, 5, 4, True, 100, None),
             # book with no goodreads, audible rating 2
-            (2, emb, None, 2, True, 100),
+            (2, emb, None, 2, True, 100, None),
             # book with neither, but is_finished → 3.5
-            (3, emb, None, None, True, 100),
+            (3, emb, None, None, True, 100, None),
         ]
         cursor = FakeCursor({"embedding IS NOT NULL": rows})
 
@@ -132,7 +208,7 @@ class TestComputeTasteVector:
         """Not finished but >50% complete → rating 3.0."""
         emb = _make_full_embedding(2.0)
         rows = [
-            (1, emb, None, None, False, 75.0),  # >50%, not finished → 3.0
+            (1, emb, None, None, False, 75.0, None),  # >50%, not finished → 3.0
         ]
         cursor = FakeCursor({"embedding IS NOT NULL": rows})
 
@@ -154,8 +230,8 @@ class TestComputeTasteVector:
         """Books with no rating source and <50% complete → skip → (None, 0)."""
         emb = _make_full_embedding(1.0)
         rows = [
-            (1, emb, None, None, False, 10.0),  # <50%, not finished → skip
-            (2, emb, 0, 0, False, 0.0),          # zero ratings → skip
+            (1, emb, None, None, False, 10.0, None),  # <50%, not finished → skip
+            (2, emb, 0, 0, False, 0.0, None),          # zero ratings → skip
         ]
         cursor = FakeCursor({"embedding IS NOT NULL": rows})
 
@@ -168,8 +244,8 @@ class TestComputeTasteVector:
         """Malformed embedding string → skip that book, don't crash."""
         good_emb = _make_full_embedding(1.0)
         rows = [
-            (1, "not_a_vector", 5, None, True, 100),  # bad embedding
-            (2, good_emb, 4, None, True, 100),          # good embedding
+            (1, "not_a_vector", 5, None, True, 100, None),  # bad embedding
+            (2, good_emb, 4, None, True, 100, None),          # good embedding
         ]
         cursor = FakeCursor({"embedding IS NOT NULL": rows})
 
@@ -183,8 +259,8 @@ class TestComputeTasteVector:
         short_emb = _make_embedding_str([0.5] * 10)  # only 10 dims
         good_emb = _make_full_embedding(2.0)
         rows = [
-            (1, short_emb, 5, None, True, 100),
-            (2, good_emb, 3, None, True, 100),
+            (1, short_emb, 5, None, True, 100, None),
+            (2, good_emb, 3, None, True, 100, None),
         ]
         cursor = FakeCursor({"embedding IS NOT NULL": rows})
 
@@ -343,8 +419,8 @@ class TestGenerateTasteProfile:
             # compute_taste_vector query — use "embedding IS NOT NULL" which is
             # unique to the centroid query (not in the top-books query)
             "embedding IS NOT NULL": [
-                (1, emb, 5, None, True, 100),
-                (2, emb, 4, None, True, 100),
+                (1, emb, 5, None, True, 100, None),
+                (2, emb, 4, None, True, 100, None),
             ],
             # Genre distribution
             "GROUP BY c.name": [

@@ -1,14 +1,26 @@
 <script lang="ts">
 	import HealthCheck from '$lib/components/HealthCheck.svelte';
 	import RecommendationCard from '$lib/components/RecommendationCard.svelte';
+	import SeriesGroupCard from '$lib/components/SeriesGroupCard.svelte';
 	import SeriesSection from '$lib/components/SeriesSection.svelte';
-	import { getRecommendations } from '$lib/api/recommendations.remote';
+	import { getRecommendations, getSeriesRecommendations } from '$lib/api/recommendations.remote';
+	import { putTasteRule } from '$lib/api/taste.remote';
 
 	const PAGE_SIZE = 20;
 	let offset = $state(0);
 
 	const recsQuery = $derived(getRecommendations({ limit: PAGE_SIZE, offset }));
 	const recs = $derived(await recsQuery);
+
+	// "Continue Your Series" query is owned here so card exclusions refresh both surfaces.
+	const seriesQuery = getSeriesRecommendations();
+
+	async function excludeRule(scope: string, entityId: number) {
+		await putTasteRule({ scope, entity_id: entityId, mode: 'exclude' }).updates(
+			recsQuery,
+			seriesQuery
+		);
+	}
 </script>
 
 <h1 class="font-heading text-3xl font-bold text-foreground">Your Next Listen</h1>
@@ -31,8 +43,12 @@
 			</div>
 		{:else}
 			<div class="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-				{#each recs.items as rec (rec.id)}
-					<RecommendationCard {rec} query={recsQuery} />
+				{#each recs.items as item (item.type === 'series' ? `s${item.series_id}` : `b${item.id}`)}
+					{#if item.type === 'series'}
+						<SeriesGroupCard group={item} onExclude={excludeRule} />
+					{:else}
+						<RecommendationCard rec={item} query={recsQuery} onExclude={excludeRule} />
+					{/if}
 				{/each}
 			</div>
 
@@ -94,4 +110,4 @@
 	</svelte:boundary>
 </section>
 
-<SeriesSection />
+<SeriesSection query={seriesQuery} onExclude={excludeRule} />

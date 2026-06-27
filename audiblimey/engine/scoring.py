@@ -16,6 +16,7 @@ from decimal import Decimal
 from typing import Optional
 
 from audiblimey.db import get_cursor
+from audiblimey.engine.taste import excluded_book_ids
 
 logger = logging.getLogger(__name__)
 
@@ -84,137 +85,136 @@ def recency_decay(date_read: Optional[date], reference_date: Optional[date] = No
     return math.exp(-decay_constant * days_ago)
 
 
-def get_author_scores(user_id: int = 1) -> dict[str, dict]:
-    """Get rating-weighted scores for all authors in user's library.
-    
-    Returns dict of author_name → {avg_rating, book_count, weighted_score, books}
+# Per-owned-book affinity when the user has no personal star rating, derived
+# from engagement: finishing a book is the strongest positive signal, an
+# abandoned/untouched purchase the weakest. Used by author/narrator scoring.
+_AFFINITY_FROM_ENGAGEMENT = """
+    CASE WHEN ul.is_finished THEN 4.0
+         WHEN ul.percent_complete > 50 THEN 3.5
+         WHEN ul.percent_complete > 0 THEN 3.0
+         ELSE 2.5 END
+"""
+
+
+def get_author_scores(user_id: int = 1, excluded_ids: Optional[set[int]] = None) -> dict[str, dict]:
+    """Get affinity scores for all authors in the user's owned library.
+
+    Affinity is driven by the signals the user actually has — purchases, finish
+    rate, and personal ratings (``user_manual_rating`` when set, otherwise an
+    engagement-derived score). Books excluded by taste rules do not contribute.
+
+    Returns dict of author_name → {avg_rating, book_count, finished_count,
+    weighted_score, has_negative, books}.
     """
     with get_cursor() as cur:
-        cur.execute("""
-            SELECT a.name, gb.my_rating, gb.date_read, gb.bookshelves, gb.title
-            FROM goodreads_books gb
-            JOIN book_isbn_asin_map m ON gb.id = m.goodreads_book_id
-            JOIN books b ON m.asin = b.asin
-            JOIN book_authors ba ON b.id = ba.book_id
+        if excluded_ids is None:
+            excluded_ids = excluded_book_ids(cur, user_id)
+        cur.execute(f"""
+            SELECT a.name,
+                   AVG(COALESCE(ul.user_manual_rating, {_AFFINITY_FROM_ENGAGEMENT})) AS affinity,
+                   COUNT(*) AS book_count,
+                   SUM(CASE WHEN ul.is_finished THEN 1 ELSE 0 END) AS finished_count
+            FROM user_libraries ul
+            JOIN book_authors ba ON ul.book_id = ba.book_id
             JOIN authors a ON ba.author_id = a.id
-            WHERE gb.my_rating > 0
-            ORDER BY a.name, gb.date_read DESC
-        """)
+            WHERE ul.user_id = %s
+              AND ul.book_id <> ALL(%s::bigint[])
+            GROUP BY a.name
+        """, (user_id, list(excluded_ids)))
         rows = cur.fetchall()
-    
-    authors = {}
-    for name, rating, date_read, shelves, title in rows:
-        if name not in authors:
-            authors[name] = {"ratings": [], "books": [], "has_negative": False}
-        
-        decay = recency_decay(date_read)
-        authors[name]["ratings"].append(float(rating) * decay)
-        authors[name]["books"].append({
-            "title": title,
-            "rating": float(rating),
-            "date_read": str(date_read) if date_read else None,
-            "recency_decay": round(decay, 3),
-        })
-        
-        # Check for negative shelf signals
-        if shelves:
-            shelf_lower = shelves.lower()
-            if any(neg in shelf_lower for neg in ["abandoned", "dnf", "did-not-finish"]):
-                authors[name]["has_negative"] = True
-    
-    # Compute weighted averages
+
     result = {}
-    for name, data in authors.items():
-        if data["ratings"]:
-            avg = sum(data["ratings"]) / len(data["ratings"])
-            result[name] = {
-                "avg_rating": round(avg, 2),
-                "book_count": len(data["ratings"]),
-                "weighted_score": round(avg / 5.0, 4),  # Normalize to 0-1
-                "has_negative": data["has_negative"],
-                "books": data["books"],
-            }
-    
+    for name, affinity, book_count, finished in rows:
+        avg = float(affinity or 0)
+        result[name] = {
+            "avg_rating": round(avg, 2),
+            "book_count": int(book_count),
+            "finished_count": int(finished or 0),
+            "weighted_score": round(min(avg / 5.0, 1.0), 4),
+            "has_negative": False,
+            "books": [],
+        }
+
     return result
 
 
-def get_narrator_scores(user_id: int = 1) -> dict[str, dict]:
-    """Get rating-weighted scores for all narrators in user's library."""
-    with get_cursor() as cur:
-        cur.execute("""
-            SELECT n.name, gb.my_rating, gb.date_read, gb.title
-            FROM goodreads_books gb
-            JOIN book_isbn_asin_map m ON gb.id = m.goodreads_book_id
-            JOIN books b ON m.asin = b.asin
-            JOIN book_narrators bn ON b.id = bn.book_id
-            JOIN narrators n ON bn.narrator_id = n.id
-            WHERE gb.my_rating > 0
-            ORDER BY n.name, gb.date_read DESC
-        """)
-        rows = cur.fetchall()
-    
-    narrators = {}
-    for name, rating, date_read, title in rows:
-        if name not in narrators:
-            narrators[name] = {"ratings": [], "books": []}
-        
-        decay = recency_decay(date_read)
-        narrators[name]["ratings"].append(float(rating) * decay)
-        narrators[name]["books"].append({
-            "title": title,
-            "rating": float(rating),
-            "date_read": str(date_read) if date_read else None,
-        })
-    
-    result = {}
-    for name, data in narrators.items():
-        if data["ratings"]:
-            avg = sum(data["ratings"]) / len(data["ratings"])
-            result[name] = {
-                "avg_rating": round(avg, 2),
-                "book_count": len(data["ratings"]),
-                "weighted_score": round(avg / 5.0, 4),
-                "books": data["books"],
-            }
-    
-    return result
+def get_narrator_scores(user_id: int = 1, excluded_ids: Optional[set[int]] = None) -> dict[str, dict]:
+    """Get affinity scores for all narrators in the user's owned library.
 
-
-def get_series_progress(user_id: int = 1) -> list[dict]:
-    """Get incomplete series with urgency scoring.
-    
-    Returns series ordered by: progress * rating * urgency.
+    Mirrors :func:`get_author_scores` — driven by purchases, finish rate, and
+    personal ratings. Books excluded by taste rules do not contribute.
     """
     with get_cursor() as cur:
+        if excluded_ids is None:
+            excluded_ids = excluded_book_ids(cur, user_id)
+        cur.execute(f"""
+            SELECT n.name,
+                   AVG(COALESCE(ul.user_manual_rating, {_AFFINITY_FROM_ENGAGEMENT})) AS affinity,
+                   COUNT(*) AS book_count,
+                   SUM(CASE WHEN ul.is_finished THEN 1 ELSE 0 END) AS finished_count
+            FROM user_libraries ul
+            JOIN book_narrators bn ON ul.book_id = bn.book_id
+            JOIN narrators n ON bn.narrator_id = n.id
+            WHERE ul.user_id = %s
+              AND ul.book_id <> ALL(%s::bigint[])
+            GROUP BY n.name
+        """, (user_id, list(excluded_ids)))
+        rows = cur.fetchall()
+
+    result = {}
+    for name, affinity, book_count, finished in rows:
+        avg = float(affinity or 0)
+        result[name] = {
+            "avg_rating": round(avg, 2),
+            "book_count": int(book_count),
+            "finished_count": int(finished or 0),
+            "weighted_score": round(min(avg / 5.0, 1.0), 4),
+            "books": [],
+        }
+
+    return result
+
+
+def get_series_progress(user_id: int = 1, excluded_ids: Optional[set[int]] = None) -> list[dict]:
+    """Get incomplete series with urgency scoring.
+
+    Returns series ordered by: progress * rating * urgency. Books excluded by
+    taste rules (incl. whole-series exclusions) do not count toward progress.
+    """
+    with get_cursor() as cur:
+        if excluded_ids is None:
+            excluded_ids = excluded_book_ids(cur, user_id)
         cur.execute("""
             WITH user_series AS (
-                SELECT 
+                SELECT
                     s.id as series_id,
                     s.title as series_title,
                     COUNT(DISTINCT bs.book_id) as total_in_series,
                     COUNT(DISTINCT CASE WHEN ul.id IS NOT NULL THEN bs.book_id END) as owned_count,
                     MAX(bs.sequence) as max_owned_sequence,
-                    AVG(CASE WHEN ul.user_rating IS NOT NULL THEN ul.user_rating END) as avg_audible_rating
+                    AVG(COALESCE(ul.user_manual_rating, ul.user_rating)) as avg_audible_rating
                 FROM series s
                 JOIN book_series bs ON s.id = bs.series_id
                 LEFT JOIN user_libraries ul ON bs.book_id = ul.book_id AND ul.user_id = %s
+                WHERE bs.book_id <> ALL(%s::bigint[])
                 GROUP BY s.id, s.title
                 HAVING COUNT(DISTINCT CASE WHEN ul.id IS NOT NULL THEN bs.book_id END) > 0
             )
-            SELECT series_title, total_in_series, owned_count, max_owned_sequence, avg_audible_rating
+            SELECT series_id, series_title, total_in_series, owned_count, max_owned_sequence, avg_audible_rating
             FROM user_series
             WHERE owned_count < total_in_series
             ORDER BY (owned_count::float / NULLIF(total_in_series, 0)) * COALESCE(avg_audible_rating, 3.0) DESC
-        """, (user_id,))
+        """, (user_id, list(excluded_ids)))
         rows = cur.fetchall()
-    
+
     series_list = []
-    for title, total, owned, max_seq, avg_rating in rows:
+    for series_id, title, total, owned, max_seq, avg_rating in rows:
         progress = float(owned) / max(total, 1)
         rating_factor = float(avg_rating or 3.0) / 5.0
         urgency = progress * rating_factor
-        
+
         series_list.append({
+            "series_id": series_id,
             "series_title": title,
             "total_books": total,
             "owned_count": owned,
@@ -227,20 +227,26 @@ def get_series_progress(user_id: int = 1) -> list[dict]:
     return series_list
 
 
-def get_negative_signals(user_id: int = 1) -> dict:
+def get_negative_signals(user_id: int = 1, excluded_ids: Optional[set[int]] = None) -> dict:
     """Get authors/narrators associated with abandoned/DNF books.
-    
-    Returns dict of author/narrator names → negative signal strength.
+
+    Returns dict of author/narrator names → negative signal strength. Books excluded
+    by taste rules do not contribute (positive or negative).
     """
     negatives = {"authors": {}, "narrators": {}}
-    
+
     with get_cursor() as cur:
-        # Find Goodreads books with negative shelves
+        if excluded_ids is None:
+            excluded_ids = excluded_book_ids(cur, user_id)
+        # Find Goodreads books with negative shelves (%% escaped: query is parameterized)
         cur.execute("""
             SELECT gb.title, gb.author, gb.bookshelves
             FROM goodreads_books gb
-            WHERE gb.bookshelves ILIKE ANY(ARRAY['%abandoned%', '%dnf%', '%did-not-finish%', '%gave-up%'])
-        """)
+            LEFT JOIN book_isbn_asin_map m ON m.goodreads_book_id = gb.id
+            LEFT JOIN books b ON b.asin = m.asin
+            WHERE gb.bookshelves ILIKE ANY(ARRAY['%%abandoned%%', '%%dnf%%', '%%did-not-finish%%', '%%gave-up%%'])
+              AND (b.id IS NULL OR b.id <> ALL(%s::bigint[]))
+        """, (list(excluded_ids),))
         rows = cur.fetchall()
         
         for title, author, shelves in rows:
@@ -259,6 +265,7 @@ def score_recommendation(
     narrator_scores: dict,
     negative_signals: dict,
     series_progress: list,
+    book_narrators: Optional[list] = None,
 ) -> RecommendationScore:
     """Compute a rating-weighted score for a single recommendation.
     
@@ -292,17 +299,21 @@ def score_recommendation(
             detail=f"Avg rating {data['avg_rating']}/5 across {data['book_count']} books by {source_name}",
         ))
     
-    # Narrator score (look up narrator for this book)
-    for narrator_name, ndata in narrator_scores.items():
-        # Check if this narrator is associated with the recommended book
-        with get_cursor() as cur:
-            cur.execute("""
-                SELECT 1 FROM books b
-                JOIN book_narrators bn ON b.id = bn.book_id
-                JOIN narrators n ON bn.narrator_id = n.id
-                WHERE b.asin = %s AND n.name = %s
-            """, (book_asin, narrator_name))
-            if cur.fetchone():
+    # Narrator score. Callers scoring many books should pass book_narrators (the
+    # book's narrator names) to avoid a per-book DB hit; otherwise we look it up.
+    if narrator_scores:
+        if book_narrators is None:
+            with get_cursor() as cur:
+                cur.execute("""
+                    SELECT n.name FROM books b
+                    JOIN book_narrators bn ON b.id = bn.book_id
+                    JOIN narrators n ON bn.narrator_id = n.id
+                    WHERE b.asin = %s
+                """, (book_asin,))
+                book_narrators = [r[0] for r in cur.fetchall()]
+        for narrator_name in book_narrators:
+            ndata = narrator_scores.get(narrator_name)
+            if ndata:
                 score.components.append(ScoreComponent(
                     source="narrator_rating",
                     value=ndata["weighted_score"],

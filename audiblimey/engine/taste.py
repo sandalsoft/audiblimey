@@ -44,17 +44,61 @@ def _parse_pgvector(embedding_str: str) -> Optional[list[float]]:
         return None
 
 
+def _is_excluded(title_excl: bool, title_incl: bool, entity_excl: bool, entity_incl: bool) -> bool:
+    """Single source of truth for include/exclude precedence.
+
+    A 'title' rule wins outright (exclude → excluded, include → kept). Otherwise a book
+    is excluded iff an entity rule excludes it and no entity rule includes it.
+    """
+    if title_excl:
+        return True
+    if title_incl:
+        return False
+    return bool(entity_excl and not entity_incl)
+
+
+def excluded_book_ids(cursor, user_id: int) -> set[int]:
+    """Resolve all taste rules to the set of book_ids effectively excluded.
+
+    Expands title + author/narrator/category/series rules to per-book flags, then
+    applies _is_excluded precedence.
+    """
+    cursor.execute("""
+        WITH rule_books AS (
+            SELECT entity_id AS book_id, scope, mode FROM taste_rules WHERE user_id=%s AND scope='title'
+            UNION ALL SELECT ba.book_id, t.scope, t.mode FROM taste_rules t JOIN book_authors   ba ON ba.author_id  =t.entity_id WHERE t.user_id=%s AND t.scope='author'
+            UNION ALL SELECT bn.book_id, t.scope, t.mode FROM taste_rules t JOIN book_narrators bn ON bn.narrator_id=t.entity_id WHERE t.user_id=%s AND t.scope='narrator'
+            UNION ALL SELECT bc.book_id, t.scope, t.mode FROM taste_rules t JOIN book_categories bc ON bc.category_id=t.entity_id WHERE t.user_id=%s AND t.scope='category'
+            UNION ALL SELECT bs.book_id, t.scope, t.mode FROM taste_rules t JOIN book_series    bs ON bs.series_id  =t.entity_id WHERE t.user_id=%s AND t.scope='series'
+        ), agg AS (
+            SELECT book_id,
+                bool_or(scope='title'  AND mode='exclude') AS te,
+                bool_or(scope='title'  AND mode='include') AS ti,
+                bool_or(scope<>'title' AND mode='exclude') AS ee,
+                bool_or(scope<>'title' AND mode='include') AS ei
+            FROM rule_books GROUP BY book_id
+        )
+        SELECT book_id, te, ti, ee, ei FROM agg
+    """, (user_id,) * 5)
+    return {bid for bid, te, ti, ee, ei in cursor.fetchall() if _is_excluded(te, ti, ee, ei)}
+
+
 def compute_taste_vector(
-    cursor, user_id: int
+    cursor, user_id: int, excluded_ids: Optional[set[int]] = None
 ) -> tuple[Optional[list[float]], int]:
     """Compute a rating-weighted centroid of the user's book embeddings.
 
-    Rating priority: goodreads my_rating > audible user_rating > is_finished fallback.
+    Rating priority: manual user_manual_rating > goodreads my_rating >
+    audible user_rating > is_finished fallback.
     For is_finished fallback: finished=3.5, >50% complete=3.0, else skip.
 
     Returns:
         (vector, books_count) or (None, 0) if no eligible books.
     """
+    if excluded_ids is None:
+        excluded_ids = excluded_book_ids(cursor, user_id)
+    excl = list(excluded_ids)
+
     # Fetch books with embeddings, join through to goodreads ratings via bridge table.
     # LEFT JOINs let us fall through the rating priority chain.
     cursor.execute("""
@@ -64,14 +108,16 @@ def compute_taste_vector(
             gr.my_rating,
             ul.user_rating,
             ul.is_finished,
-            ul.percent_complete
+            ul.percent_complete,
+            ul.user_manual_rating
         FROM user_libraries ul
         JOIN books b ON b.id = ul.book_id
         LEFT JOIN book_isbn_asin_map biam ON biam.asin = b.asin
         LEFT JOIN goodreads_books gr ON gr.id = biam.goodreads_book_id
         WHERE ul.user_id = %s
           AND b.embedding IS NOT NULL
-    """, (user_id,))
+          AND ul.book_id <> ALL(%s::bigint[])
+    """, (user_id, excl))
 
     rows = cursor.fetchall()
     if not rows:
@@ -82,15 +128,17 @@ def compute_taste_vector(
     books_count = 0
 
     for row in rows:
-        _book_id, emb_str, gr_rating, user_rating, is_finished, pct_complete = row
+        _book_id, emb_str, gr_rating, user_rating, is_finished, pct_complete, manual_rating = row
 
         embedding = _parse_pgvector(emb_str)
         if embedding is None or len(embedding) != EMBEDDING_DIMS:
             continue
 
-        # Determine best rating
+        # Determine best rating (manual rating is the strongest, most current signal)
         rating = None
-        if gr_rating is not None and gr_rating > 0:
+        if manual_rating is not None and manual_rating > 0:
+            rating = float(manual_rating)
+        elif gr_rating is not None and gr_rating > 0:
             rating = float(gr_rating)
         elif user_rating is not None and user_rating > 0:
             rating = float(user_rating)
@@ -116,12 +164,16 @@ def compute_taste_vector(
     return (centroid, books_count)
 
 
-def build_profile_context(cursor, user_id: int) -> dict:
+def build_profile_context(cursor, user_id: int, excluded_ids: Optional[set[int]] = None) -> dict:
     """Query structured reading stats for the LLM prompt.
 
     Returns dict with keys: top_books, genre_distribution, avg_runtime,
     median_runtime, completion_rate, total_books, finished_books.
     """
+    if excluded_ids is None:
+        excluded_ids = excluded_book_ids(cursor, user_id)
+    excl = list(excluded_ids)
+
     # Top 10 rated books (same rating priority)
     cursor.execute("""
         SELECT
@@ -134,7 +186,7 @@ def build_profile_context(cursor, user_id: int) -> dict:
                 STRING_AGG(DISTINCT c.name, ', ') FILTER (WHERE c.name IS NOT NULL),
                 ''
             ) AS categories,
-            COALESCE(gr.my_rating, ul.user_rating, CASE WHEN ul.is_finished THEN 3.5 ELSE NULL END) AS best_rating,
+            COALESCE(ul.user_manual_rating, gr.my_rating, ul.user_rating, CASE WHEN ul.is_finished THEN 3.5 ELSE NULL END) AS best_rating,
             b.runtime_length_min
         FROM user_libraries ul
         JOIN books b ON b.id = ul.book_id
@@ -145,12 +197,13 @@ def build_profile_context(cursor, user_id: int) -> dict:
         LEFT JOIN book_isbn_asin_map biam ON biam.asin = b.asin
         LEFT JOIN goodreads_books gr ON gr.id = biam.goodreads_book_id
         WHERE ul.user_id = %s
-        GROUP BY b.id, b.title, gr.my_rating, ul.user_rating, ul.is_finished, b.runtime_length_min
-        HAVING COALESCE(gr.my_rating, ul.user_rating, CASE WHEN ul.is_finished THEN 3.5 ELSE NULL END) IS NOT NULL
-        ORDER BY COALESCE(gr.my_rating, ul.user_rating, CASE WHEN ul.is_finished THEN 3.5 ELSE NULL END) DESC,
+          AND ul.book_id <> ALL(%s::bigint[])
+        GROUP BY b.id, b.title, ul.user_manual_rating, gr.my_rating, ul.user_rating, ul.is_finished, b.runtime_length_min
+        HAVING COALESCE(ul.user_manual_rating, gr.my_rating, ul.user_rating, CASE WHEN ul.is_finished THEN 3.5 ELSE NULL END) IS NOT NULL
+        ORDER BY COALESCE(ul.user_manual_rating, gr.my_rating, ul.user_rating, CASE WHEN ul.is_finished THEN 3.5 ELSE NULL END) DESC,
                  b.title
         LIMIT 10
-    """, (user_id,))
+    """, (user_id, excl))
 
     top_books = []
     for row in cursor.fetchall():
@@ -170,10 +223,11 @@ def build_profile_context(cursor, user_id: int) -> dict:
         JOIN book_categories bc ON bc.book_id = b.id
         JOIN categories c ON c.id = bc.category_id
         WHERE ul.user_id = %s
+          AND ul.book_id <> ALL(%s::bigint[])
         GROUP BY c.name
         ORDER BY cnt DESC
         LIMIT 15
-    """, (user_id,))
+    """, (user_id, excl))
 
     genre_distribution = {row[0]: row[1] for row in cursor.fetchall()}
 
@@ -185,9 +239,10 @@ def build_profile_context(cursor, user_id: int) -> dict:
         FROM user_libraries ul
         JOIN books b ON b.id = ul.book_id
         WHERE ul.user_id = %s
+          AND ul.book_id <> ALL(%s::bigint[])
           AND b.runtime_length_min IS NOT NULL
           AND b.runtime_length_min > 0
-    """, (user_id,))
+    """, (user_id, excl))
 
     runtime_row = cursor.fetchone()
     avg_runtime = round(float(runtime_row[0]), 1) if runtime_row and runtime_row[0] else None
@@ -200,7 +255,8 @@ def build_profile_context(cursor, user_id: int) -> dict:
             SUM(CASE WHEN is_finished THEN 1 ELSE 0 END)
         FROM user_libraries
         WHERE user_id = %s
-    """, (user_id,))
+          AND book_id <> ALL(%s::bigint[])
+    """, (user_id, excl))
 
     comp_row = cursor.fetchone()
     total_books = comp_row[0] if comp_row else 0
@@ -286,14 +342,17 @@ def generate_taste_profile(
     Returns:
         The generated profile text, or None if no eligible books.
     """
+    # Resolve taste-rule exclusions once and apply to both vector and context.
+    excluded = excluded_book_ids(cursor, user_id)
+
     # Step 1: Compute taste vector
-    vector, books_count = compute_taste_vector(cursor, user_id)
+    vector, books_count = compute_taste_vector(cursor, user_id, excluded_ids=excluded)
     if vector is None:
         logger.info("No eligible books for user %d — skipping profile generation", user_id)
         return None
 
     # Step 2: Build structured context for the LLM
-    context = build_profile_context(cursor, user_id)
+    context = build_profile_context(cursor, user_id, excluded_ids=excluded)
 
     # Step 3: Call LLM
     if client is None:

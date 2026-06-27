@@ -1,12 +1,38 @@
 <script lang="ts">
 	import { Search } from 'lucide-svelte';
+	import { page } from '$app/state';
+	import { goto } from '$app/navigation';
 	import BookCard from '$lib/components/BookCard.svelte';
-	import { getLibrary } from '$lib/api/library.remote';
+	import Pagination from '$lib/components/Pagination.svelte';
+	import type { RuleAction } from '$lib/components/BookCard.svelte';
+	import { getLibrary, setRating } from '$lib/api/library.remote';
+	import { putTasteRule, deleteTasteRule } from '$lib/api/taste.remote';
 
 	const PAGE_SIZE = 20;
-	let offset = $state(0);
-	let search = $state('');
-	let status = $state<'all' | 'finished' | 'in-progress' | 'not-started'>('all');
+
+	const sp = $derived(page.url.searchParams);
+	const pageNum = $derived(Math.max(1, Number(sp.get('page')) || 1));
+	const search = $derived(sp.get('search') ?? '');
+	const status = $derived((sp.get('status') ?? 'all') as 'all' | 'finished' | 'in-progress' | 'not-started');
+	const taste = $derived((sp.get('taste') ?? 'all') as 'all' | 'included' | 'excluded');
+	const offset = $derived((pageNum - 1) * PAGE_SIZE);
+
+	function setQuery(changes: Record<string, string | undefined>) {
+		const next = new URLSearchParams(page.url.searchParams);
+		for (const [k, v] of Object.entries(changes)) {
+			if (!v || v === 'all') next.delete(k);
+			else next.set(k, v);
+		}
+		// Any filter/search change resets paging back to page 1.
+		if (!('page' in changes)) next.delete('page');
+		if (next.get('page') === '1') next.delete('page');
+		const qs = next.toString();
+		goto(qs ? `?${qs}` : '?', {
+			keepFocus: true,
+			noScroll: true,
+			replaceState: !('page' in changes)
+		});
+	}
 
 	const statuses = [
 		{ value: 'all' as const, label: 'All' },
@@ -15,13 +41,29 @@
 		{ value: 'not-started' as const, label: 'Not Started' }
 	];
 
+	const tasteFilters = [
+		{ value: 'all' as const, label: 'All' },
+		{ value: 'included' as const, label: 'Included' },
+		{ value: 'excluded' as const, label: 'Excluded' }
+	];
+
 	const libraryQuery = $derived(getLibrary({
 		limit: PAGE_SIZE,
 		offset,
 		search: search || undefined,
-		status: status !== 'all' ? status : undefined
+		status: status !== 'all' ? status : undefined,
+		taste: taste !== 'all' ? taste : undefined
 	}));
 	const data = $derived(await libraryQuery);
+
+	async function rate(asin: string, rating: number | null) {
+		await setRating({ asin, rating }).updates(libraryQuery);
+	}
+
+	async function applyRule(action: RuleAction) {
+		const cmd = 'deleteId' in action ? deleteTasteRule(action.deleteId) : putTasteRule(action);
+		await cmd.updates(libraryQuery);
+	}
 </script>
 
 <h1 class="font-heading text-3xl font-bold text-foreground">Your Library</h1>
@@ -35,7 +77,7 @@
 			type="text"
 			placeholder="Search titles, authors, narrators…"
 			value={search}
-			oninput={(e) => { search = e.currentTarget.value; offset = 0; }}
+			oninput={(e) => setQuery({ search: e.currentTarget.value })}
 			class="w-full rounded-lg border border-border bg-card py-2 pl-10 pr-4 text-sm text-card-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
 		/>
 	</div>
@@ -43,13 +85,26 @@
 	<div class="flex gap-2">
 		{#each statuses as s}
 			<button
-				onclick={() => { status = s.value; offset = 0; }}
+				onclick={() => setQuery({ status: s.value })}
 				class="rounded-lg px-3 py-2 text-sm font-medium transition-colors {status === s.value ? 'bg-primary text-primary-foreground' : 'border border-border bg-card text-card-foreground hover:bg-muted'}"
 			>
 				{s.label}
 			</button>
 		{/each}
 	</div>
+</div>
+
+<!-- Taste filter -->
+<div class="mt-3 flex items-center gap-2">
+	<span class="text-sm text-muted-foreground">Taste:</span>
+	{#each tasteFilters as t}
+		<button
+			onclick={() => setQuery({ taste: t.value })}
+			class="rounded-lg px-3 py-1.5 text-sm font-medium transition-colors {taste === t.value ? 'bg-primary text-primary-foreground' : 'border border-border bg-card text-card-foreground hover:bg-muted'}"
+		>
+			{t.label}
+		</button>
+	{/each}
 </div>
 
 <!-- Library Grid -->
@@ -65,43 +120,37 @@
 		{:else}
 			<div class="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
 				{#each data.items as book (book.asin)}
-					<BookCard {book} query={search} />
+					<BookCard
+						{book}
+						query={search}
+						onRate={(r) => rate(book.asin, r)}
+						onClearRating={() => rate(book.asin, null)}
+						onRule={applyRule}
+					/>
 				{/each}
 			</div>
 
 			{@const totalPages = Math.ceil(data.total / PAGE_SIZE)}
-			{@const currentPage = Math.floor(offset / PAGE_SIZE) + 1}
 
-			{#if totalPages > 1}
-				<div class="mt-6 flex items-center justify-center gap-4">
-					<button
-						onclick={() => { offset = Math.max(0, offset - PAGE_SIZE); }}
-						disabled={offset === 0}
-						class="rounded-lg border border-border bg-card px-4 py-2 text-sm font-medium text-card-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
-					>
-						Previous
-					</button>
-					<span class="text-sm text-muted-foreground">
-						Page {currentPage} of {totalPages}
-					</span>
-					<button
-						onclick={() => { offset = offset + PAGE_SIZE; }}
-						disabled={currentPage >= totalPages}
-						class="rounded-lg border border-border bg-card px-4 py-2 text-sm font-medium text-card-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
-					>
-						Next
-					</button>
-				</div>
-			{/if}
+			<Pagination
+				currentPage={pageNum}
+				{totalPages}
+				onNavigate={(p) => setQuery({ page: String(p) })}
+			/>
 		{/if}
 
 		{#snippet pending()}
 			<div class="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
 				{#each { length: 6 } as _}
 					<div class="animate-pulse rounded-xl border border-border bg-card p-5">
-						<div class="h-5 w-3/4 rounded bg-muted"></div>
-						<div class="mt-3 h-4 w-1/2 rounded bg-muted"></div>
-						<div class="mt-2 h-4 w-1/3 rounded bg-muted"></div>
+						<div class="flex gap-4">
+							<div class="h-32 w-24 shrink-0 rounded-lg bg-muted"></div>
+							<div class="flex-1">
+								<div class="h-5 w-3/4 rounded bg-muted"></div>
+								<div class="mt-3 h-4 w-1/2 rounded bg-muted"></div>
+								<div class="mt-2 h-4 w-1/3 rounded bg-muted"></div>
+							</div>
+						</div>
 						<div class="mt-3 flex gap-3">
 							<div class="h-4 w-12 rounded bg-muted"></div>
 							<div class="h-4 w-10 rounded bg-muted"></div>
